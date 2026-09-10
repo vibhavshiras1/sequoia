@@ -139,9 +139,19 @@ func RandStr(size int) string {
 	return reg.ReplaceAllString(str, "")
 }
 
+// maxLoggedCmdLen caps how much of a command gets printed/logged. Some
+// actions (e.g. file_base64-based script staging) inline a base64 blob
+// directly into the command, which is otherwise sent to the log verbatim
+// and can run to tens of KB per line. Truncation here only affects what's
+// displayed -- the full, untruncated command is still what actually runs.
+const maxLoggedCmdLen = 300
+
 func MakeTaskMsg(image, id string, command []string, is_err bool) string {
 	ts := TimeStamp()
 	cmd := strings.Join(command, " ")
+	if len(cmd) > maxLoggedCmdLen {
+		cmd = fmt.Sprintf("%s... [truncated, showing %d of %d chars]", cmd[:maxLoggedCmdLen], maxLoggedCmdLen, len(cmd))
+	}
 	meta := fmt.Sprintf("[%s, %s:%s]", ts, image, id[:6])
 	if is_err == true {
 		meta = color.RedString(meta)

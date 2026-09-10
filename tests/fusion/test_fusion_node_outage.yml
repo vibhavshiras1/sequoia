@@ -157,8 +157,8 @@
 ############### load data into all 100 collections ################
 # pillowfight, not magmaloader: with multiple --collection flags, cbc-pillowfight
 # round-robins documents across all of them, so -I is the TOTAL across the 10
-# collections in each bucket, not a per-collection count -- 10,000 total per
-# bucket here, ~1,000/collection.
+# collections in each bucket, not a per-collection count -- 500,000 total per
+# bucket here, ~50,000/collection (5M documents total across all 10 buckets).
 # scope_0 / coll_0..coll_9 -- CONFIRMED 0-based against a live cluster
 # (Couchbase UI showed bucket1 with scope_0/coll_0-coll_9). The 1-based
 # guess this comment originally made, based on other tests' comments
@@ -169,7 +169,7 @@
 
 - image: sequoiatools/pillowfight:7.0
   command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket1
-            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            -I {{.Scale 500000}} -M 1024 -B 100 -t 4 --random-body
             --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
             --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
             --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
@@ -177,7 +177,7 @@
   requires: "{{eq true .DoOnce }}"
   wait: true
 - command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket2
-            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            -I {{.Scale 500000}} -M 1024 -B 100 -t 4 --random-body
             --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
             --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
             --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
@@ -185,7 +185,7 @@
   requires: "{{eq true .DoOnce }}"
   wait: true
 - command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket3
-            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            -I {{.Scale 500000}} -M 1024 -B 100 -t 4 --random-body
             --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
             --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
             --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
@@ -193,7 +193,7 @@
   requires: "{{eq true .DoOnce }}"
   wait: true
 - command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket4
-            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            -I {{.Scale 500000}} -M 1024 -B 100 -t 4 --random-body
             --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
             --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
             --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
@@ -201,7 +201,7 @@
   requires: "{{eq true .DoOnce }}"
   wait: true
 - command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket5
-            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            -I {{.Scale 500000}} -M 1024 -B 100 -t 4 --random-body
             --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
             --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
             --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
@@ -209,7 +209,7 @@
   requires: "{{eq true .DoOnce }}"
   wait: true
 - command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket6
-            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            -I {{.Scale 500000}} -M 1024 -B 100 -t 4 --random-body
             --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
             --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
             --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
@@ -217,7 +217,7 @@
   requires: "{{eq true .DoOnce }}"
   wait: true
 - command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket7
-            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            -I {{.Scale 500000}} -M 1024 -B 100 -t 4 --random-body
             --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
             --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
             --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
@@ -225,7 +225,7 @@
   requires: "{{eq true .DoOnce }}"
   wait: true
 - command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket8
-            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            -I {{.Scale 500000}} -M 1024 -B 100 -t 4 --random-body
             --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
             --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
             --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
@@ -233,7 +233,7 @@
   requires: "{{eq true .DoOnce }}"
   wait: true
 - command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket9
-            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            -I {{.Scale 500000}} -M 1024 -B 100 -t 4 --random-body
             --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
             --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
             --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
@@ -241,7 +241,7 @@
   requires: "{{eq true .DoOnce }}"
   wait: true
 - command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket10
-            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            -I {{.Scale 500000}} -M 1024 -B 100 -t 4 --random-body
             --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
             --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
             --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
@@ -282,9 +282,17 @@
   command: "/cbinit.py {{.ActiveDataNode 1}} {{.SSHUsername}} {{.SSHPassword}} stop"
   wait: true
 
+# exercise Fusion's forced-sync path WHILE the node is down, rather than just
+# sitting idle for the whole outage window -- this is a REST call against
+# {{.Orchestrator}} (still up), so it doesn't need the down node to respond;
+# the interesting question is whether Fusion accounts for that node's
+# now-unreachable vbuckets sanely instead of hanging or erroring out
+- template: sync_log_store
+  wait: true
+
 - image: sequoiatools/cmd
   entrypoint: sleep
-  command: "120"
+  command: "90"
   wait: true
 
 - image: sequoiatools/cbutil
@@ -303,15 +311,14 @@
   command: "180"
   wait: true
 
-# fusion_rebalance settle pass -- $1 (current) and $2 (new) are the SAME 4
-# active nodes, so cluster membership doesn't change here either. The point
-# isn't to add/remove anything; it's to exercise the full accelerated-
-# rebalance pipeline (prepareRebalance -> manifest split/sync -> accelerator
-# -> start rebalance) as a real post-recovery check, not just a REST status
-# poll, confirming the restarted node's Fusion state is genuinely back in
-# sync rather than just reachable.
+# fusion_rebalance-in: $1 (current, 4 active nodes) and $2 (new, those 4 plus
+# one of the 2 spares held out by scope_fusion_node_outage.yml) genuinely
+# differ this time, so run_fusion_rebalance.py's add_nodes() has something
+# to add and the whole accelerated pipeline (prepareRebalance -> manifest
+# split/sync -> accelerator -> start rebalance) actually moves data, rather
+# than a no-op settle pass against an unchanged node set.
 - template: fusion_rebalance
-  args: "{{.Orchestrator}}, ({{.ActiveDataNode 0}},{{.ActiveDataNode 1}},{{.ActiveDataNode 2}},{{.ActiveDataNode 3}}), ({{.ActiveDataNode 0}},{{.ActiveDataNode 1}},{{.ActiveDataNode 2}},{{.ActiveDataNode 3}}), 60, 1"
+  args: "{{.Orchestrator}}, ({{.ActiveDataNode 0}},{{.ActiveDataNode 1}},{{.ActiveDataNode 2}},{{.ActiveDataNode 3}}), ({{.ActiveDataNode 0}},{{.ActiveDataNode 1}},{{.ActiveDataNode 2}},{{.ActiveDataNode 3}},{{.InActiveNode}}), 60, 1"
   wait: true
 
 # fusion_rebalance's own script returns as soon as its POST /controller/rebalance
