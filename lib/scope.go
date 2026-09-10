@@ -135,6 +135,7 @@ func (s *Scope) SetupServer() {
 	if !(*s.Flags.Capella) {
 		s.WaitForServers()
 		s.InitCli()
+		s.InitRestContainer()
 		s.InitNodes()
 		s.InitCluster()
 		s.AddUsers()

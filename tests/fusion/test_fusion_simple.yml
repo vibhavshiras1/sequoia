@@ -1,0 +1,134 @@
+- include: tests/templates/fusion.yml, tests/templates/nfs.yml, tests/templates/kv.yml
+
+############### set up NFS server + client mounts ################
+- section_start: setup_nfs
+
+- template: setup_nfs_server
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+# mounts the share on every node declared in the scope, including the spare
+# node used later by the fusion_rebalance demo below
+#
+# NOTE: setup_nfs_client_all_nodes contains a `foreach`, so this `requires`
+# gets inherited onto the ranged sub-action (lib/test.go:912) and ends up
+# INSIDE the {{range}}...{{end}} block that foreach expands into. Inside a
+# range, `.` is rebound to the current loop item, so plain `.DoOnce` fails
+# with "can't evaluate field DoOnce in type string". `$.DoOnce` uses Go
+# text/template's `$`, which always stays bound to the root context
+# regardless of range nesting -- use it on requires/before/until for any
+# template call that resolves into a `foreach`-bearing action.
+- template: setup_nfs_client_all_nodes
+  requires: "{{eq true $.DoOnce }}"
+  wait: true
+
+- section_end: setup_nfs
+
+############### configure and enable fusion ################
+- section_start: setup_fusion
+
+- template: configure_fusion
+  args: "local:///mnt/nfs/share/buckets"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- template: enable_fusion
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- template: wait_for_fusion_status
+  args: "enabled"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- section_end: setup_fusion
+
+############### create the fusion-backed bucket ################
+# Created here, AFTER enable_fusion, not declared in scope_fusion_simple.yml
+# -- see the note at the top of that file for why: Sequoia's automatic
+# scope.SetupServer() bucket creation runs before ANY test action, which
+# would create this bucket before Fusion was even enabled.
+- section_start: create_bucket
+
+- image: sequoiatools/couchbase-cli:8.5
+  command: "bucket-create -c {{.Orchestrator}}:{{.RestPort}} -u {{.RestUsername}} -p {{.RestPassword}}
+            --bucket default --bucket-ramsize 1024 --bucket-type couchbase
+            --bucket-replica 1 --bucket-eviction-policy fullEviction
+            --storage-backend magma --enable-flush 1 --wait"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- section_end: create_bucket
+
+############### stage the fusion rebalance driver scripts ################
+- section_start: stage_fusion_scripts
+
+# stages run_fusion_rebalance.py + run_local_accelerator.sh + config.json on
+# every node (including the spare one) -- required before fusion_rebalance
+#
+# $.DoOnce, not .DoOnce -- this template also contains a `foreach`; see the
+# note on setup_nfs_client_all_nodes above.
+- template: stage_fusion_rebalance_scripts_all_nodes
+  requires: "{{eq true $.DoOnce }}"
+  wait: true
+
+- section_end: stage_fusion_scripts
+
+############### load data ################
+- section_start: data_load
+
+# bucket name is hardcoded here ("default"), not {{.Bucket}} -- the scope
+# declares no buckets (see create_bucket section above), so {{.Bucket}}
+# would have nothing to resolve to
+- image: sequoiatools/gideon_latest
+  command: "kv --ops {{.Scale 1000}} --create 80 --get 20 --hosts {{.Orchestrator}} --bucket default --user {{.RestUsername}} --password {{.RestPassword}}"
+  duration: 300
+  wait: true
+
+- section_end: data_load
+
+############### force fusion log store sync ################
+- section_start: sync_log_store
+
+# force pending mutations to upload to the log store now, instead of
+# waiting for Fusion's periodic upload interval
+- template: sync_log_store
+  wait: true
+
+# give the forced sync a couple of minutes to complete before rebalancing
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "120"
+  wait: true
+
+- section_end: sync_log_store
+
+############### fusion rebalance-in ################
+- section_start: fusion_rebalance_in
+
+# rebalance the one spare node into the cluster (scope leaves init_nodes: 1
+# of count: 2 free for this) via the fusion-accelerated rebalance path
+# $2 (new-nodes) is wrapped in parens: Sequoia's args splitter breaks on
+# every top-level comma, and parens are how it groups a comma-containing
+# value into a single positional arg (see .ActiveIndexNode usage elsewhere).
+- template: fusion_rebalance
+  args: "{{.Orchestrator}}, {{.Orchestrator}}, ({{.Orchestrator}},{{.InActiveNode}}), 60, 1"
+  wait: true
+
+- template: get_active_guest_volumes
+  wait: true
+
+- section_end: fusion_rebalance_in
+
+############### verify ################
+- section_start: verify_fusion
+
+- template: get_fusion_status
+  wait: true
+
+# confirm log files actually landed on the NFS server's shared log store
+- image: sequoiatools/cmd
+  command: "sshpass -p {{.SSHPassword}} ssh -o StrictHostKeyChecking=no {{.SSHUsername}}@{{.NfsServer}} 'find /data/nfs/share/buckets -name \"log-*\" | wc -l'"
+  wait: true
+
+- section_end: verify_fusion

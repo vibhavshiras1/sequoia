@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,7 @@ func chkerr(err error) {
 }
 func logerr(err error) {
 	if err != nil {
+		debug.PrintStack()
 		log.Fatalln(err)
 	}
 }

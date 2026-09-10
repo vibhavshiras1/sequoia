@@ -1,0 +1,356 @@
+- include: tests/templates/fusion.yml, tests/templates/nfs.yml, tests/templates/kv.yml, tests/templates/rebalance.yml, tests/templates/collections.yml
+
+############### set up NFS server + client mounts ################
+- section_start: setup_nfs
+
+- template: setup_nfs_server
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+# mounts the share on every node declared in the scope, including both
+# spare nodes -- they may be pulled into a fusion_rebalance later
+- template: setup_nfs_client_all_nodes
+  requires: "{{eq true $.DoOnce }}"
+  wait: true
+
+- section_end: setup_nfs
+
+############### configure and enable fusion ################
+- section_start: setup_fusion
+
+- template: configure_fusion
+  args: "local:///mnt/nfs/share/buckets"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- template: enable_fusion
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- template: wait_for_fusion_status
+  args: "enabled"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- section_end: setup_fusion
+
+############### create 10 fusion-backed buckets ################
+# mix of 128/1024 vbuckets, 2 replicas, magma storage. Couchbase requires
+# >= 1GB ram quota for any bucket with 1024 vbuckets, so the 5 buckets using
+# 1024 vbuckets here all get >= 1024MB; the 5 using 128 vbuckets can go as
+# low as 100MB. Sum across all 10: 10072MB, under the node's 10500MB quota.
+# Created here, after enable_fusion, not in the scope file -- see the note
+# at the top of scope_fusion_node_outage.yml for why.
+- section_start: create_buckets
+
+- image: sequoiatools/couchbase-cli:8.5
+  command: "bucket-create -c {{.Orchestrator}}:{{.RestPort}} -u {{.RestUsername}} -p {{.RestPassword}}
+            --bucket bucket1 --bucket-ramsize 100 --bucket-type couchbase
+            --bucket-replica 2 --bucket-eviction-policy fullEviction
+            --storage-backend magma --enable-flush 1 --wait"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "bucket-create -c {{.Orchestrator}}:{{.RestPort}} -u {{.RestUsername}} -p {{.RestPassword}}
+            --bucket bucket2 --bucket-ramsize 1024 --bucket-type couchbase
+            --bucket-replica 2 --bucket-eviction-policy fullEviction
+            --storage-backend magma --enable-flush 1 --num-vbuckets 1024 --wait"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "bucket-create -c {{.Orchestrator}}:{{.RestPort}} -u {{.RestUsername}} -p {{.RestPassword}}
+            --bucket bucket3 --bucket-ramsize 300 --bucket-type couchbase
+            --bucket-replica 2 --bucket-eviction-policy fullEviction
+            --storage-backend magma --enable-flush 1 --wait"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "bucket-create -c {{.Orchestrator}}:{{.RestPort}} -u {{.RestUsername}} -p {{.RestPassword}}
+            --bucket bucket4 --bucket-ramsize 1200 --bucket-type couchbase
+            --bucket-replica 2 --bucket-eviction-policy fullEviction
+            --storage-backend magma --enable-flush 1 --num-vbuckets 1024 --wait"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "bucket-create -c {{.Orchestrator}}:{{.RestPort}} -u {{.RestUsername}} -p {{.RestPassword}}
+            --bucket bucket5 --bucket-ramsize 500 --bucket-type couchbase
+            --bucket-replica 2 --bucket-eviction-policy fullEviction
+            --storage-backend magma --enable-flush 1 --wait"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "bucket-create -c {{.Orchestrator}}:{{.RestPort}} -u {{.RestUsername}} -p {{.RestPassword}}
+            --bucket bucket6 --bucket-ramsize 1500 --bucket-type couchbase
+            --bucket-replica 2 --bucket-eviction-policy fullEviction
+            --storage-backend magma --enable-flush 1 --num-vbuckets 1024 --wait"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "bucket-create -c {{.Orchestrator}}:{{.RestPort}} -u {{.RestUsername}} -p {{.RestPassword}}
+            --bucket bucket7 --bucket-ramsize 700 --bucket-type couchbase
+            --bucket-replica 2 --bucket-eviction-policy fullEviction
+            --storage-backend magma --enable-flush 1 --wait"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "bucket-create -c {{.Orchestrator}}:{{.RestPort}} -u {{.RestUsername}} -p {{.RestPassword}}
+            --bucket bucket8 --bucket-ramsize 1800 --bucket-type couchbase
+            --bucket-replica 2 --bucket-eviction-policy fullEviction
+            --storage-backend magma --enable-flush 1 --num-vbuckets 1024 --wait"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "bucket-create -c {{.Orchestrator}}:{{.RestPort}} -u {{.RestUsername}} -p {{.RestPassword}}
+            --bucket bucket9 --bucket-ramsize 900 --bucket-type couchbase
+            --bucket-replica 2 --bucket-eviction-policy fullEviction
+            --storage-backend magma --enable-flush 1 --wait"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "bucket-create -c {{.Orchestrator}}:{{.RestPort}} -u {{.RestUsername}} -p {{.RestPassword}}
+            --bucket bucket10 --bucket-ramsize 2048 --bucket-type couchbase
+            --bucket-replica 2 --bucket-eviction-policy fullEviction
+            --storage-backend magma --enable-flush 1 --num-vbuckets 1024 --wait"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- section_end: create_buckets
+
+############### create 10 collections per bucket (100 total) ################
+# 1 scope, 10 collections, per bucket -- "uniform" puts all 10 in that one scope
+- section_start: create_collections
+
+- template: create-multi-scopes-collections
+  args: "{{.Orchestrator}}, bucket1, 1, 10, uniform"
+  requires: "{{eq true .DoOnce }}"
+- args: "{{.Orchestrator}}, bucket2, 1, 10, uniform"
+  requires: "{{eq true .DoOnce }}"
+- args: "{{.Orchestrator}}, bucket3, 1, 10, uniform"
+  requires: "{{eq true .DoOnce }}"
+- args: "{{.Orchestrator}}, bucket4, 1, 10, uniform"
+  requires: "{{eq true .DoOnce }}"
+- args: "{{.Orchestrator}}, bucket5, 1, 10, uniform"
+  requires: "{{eq true .DoOnce }}"
+- args: "{{.Orchestrator}}, bucket6, 1, 10, uniform"
+  requires: "{{eq true .DoOnce }}"
+- args: "{{.Orchestrator}}, bucket7, 1, 10, uniform"
+  requires: "{{eq true .DoOnce }}"
+- args: "{{.Orchestrator}}, bucket8, 1, 10, uniform"
+  requires: "{{eq true .DoOnce }}"
+- args: "{{.Orchestrator}}, bucket9, 1, 10, uniform"
+  requires: "{{eq true .DoOnce }}"
+- args: "{{.Orchestrator}}, bucket10, 1, 10, uniform"
+  requires: "{{eq true .DoOnce }}"
+
+# let the collection manifest sync before loading data
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "60"
+  wait: true
+
+- section_end: create_collections
+
+############### stage the fusion rebalance driver scripts ################
+# stages run_fusion_rebalance.py + run_local_accelerator.sh + config.json on
+# every node (both active and spare) -- not used by the outage itself, but
+# kept staged here so this scope is ready for a follow-up fusion_rebalance
+# once the node comes back, without a separate setup pass
+- section_start: stage_fusion_scripts
+
+- template: stage_fusion_rebalance_scripts_all_nodes
+  requires: "{{eq true $.DoOnce }}"
+  wait: true
+
+- section_end: stage_fusion_scripts
+
+############### load data into all 100 collections ################
+# pillowfight, not magmaloader: with multiple --collection flags, cbc-pillowfight
+# round-robins documents across all of them, so -I is the TOTAL across the 10
+# collections in each bucket, not a per-collection count -- 10,000 total per
+# bucket here, ~1,000/collection.
+# scope_0 / coll_0..coll_9 -- CONFIRMED 0-based against a live cluster
+# (Couchbase UI showed bucket1 with scope_0/coll_0-coll_9). The 1-based
+# guess this comment originally made, based on other tests' comments
+# describing this same tool as "scope_1,scope_2...", was wrong -- those
+# apparently describe a different code path or version. Don't trust
+# comments-as-precedent for this again; verify against a real cluster.
+- section_start: data_load
+
+- image: sequoiatools/pillowfight:7.0
+  command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket1
+            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
+            --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
+            --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
+            --collection scope_0.coll_9 --json --populate-only"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket2
+            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
+            --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
+            --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
+            --collection scope_0.coll_9 --json --populate-only"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket3
+            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
+            --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
+            --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
+            --collection scope_0.coll_9 --json --populate-only"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket4
+            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
+            --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
+            --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
+            --collection scope_0.coll_9 --json --populate-only"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket5
+            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
+            --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
+            --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
+            --collection scope_0.coll_9 --json --populate-only"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket6
+            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
+            --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
+            --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
+            --collection scope_0.coll_9 --json --populate-only"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket7
+            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
+            --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
+            --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
+            --collection scope_0.coll_9 --json --populate-only"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket8
+            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
+            --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
+            --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
+            --collection scope_0.coll_9 --json --populate-only"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket9
+            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
+            --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
+            --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
+            --collection scope_0.coll_9 --json --populate-only"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket10
+            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body
+            --collection scope_0.coll_0 --collection scope_0.coll_1 --collection scope_0.coll_2
+            --collection scope_0.coll_3 --collection scope_0.coll_4 --collection scope_0.coll_5
+            --collection scope_0.coll_6 --collection scope_0.coll_7 --collection scope_0.coll_8
+            --collection scope_0.coll_9 --json --populate-only"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- section_end: data_load
+
+############### force fusion log store sync ################
+- section_start: sync_log_store
+
+- template: sync_log_store
+  wait: true
+
+# give the forced sync a couple of minutes to complete before the outage
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "120"
+  wait: true
+
+- section_end: sync_log_store
+
+############### node outage -- no topology change ################
+# autofailover left OFF and the target node is restarted well before any
+# failover timeout could matter -- membership never changes here. See
+# tests/fusion/CHAOS_PLAN.md for why this is a deliberately separate,
+# simpler test from an autofailover/rebalance cycle.
+- section_start: node_outage
+
+- template: disable_autofailover
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+# target a non-orchestrator active node -- all REST checks in this test hit
+# {{.Orchestrator}}, which must stay reachable throughout the outage
+- image: sequoiatools/cbutil
+  command: "/cbinit.py {{.ActiveDataNode 1}} {{.SSHUsername}} {{.SSHPassword}} stop"
+  wait: true
+
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "120"
+  wait: true
+
+- image: sequoiatools/cbutil
+  command: "/cbinit.py {{.ActiveDataNode 1}} {{.SSHUsername}} {{.SSHPassword}} start"
+  wait: true
+
+# wait for the node's REST port to come back -- same tool Sequoia's own
+# WaitForServers() uses during initial cluster setup
+- image: martin/wait
+  command: "-c {{.ActiveDataNode 1}}:{{.RestPort}} -t 300"
+  wait: true
+
+# let memcached warm up and DCP/replication re-establish before checking
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "180"
+  wait: true
+
+# fusion_rebalance settle pass -- $1 (current) and $2 (new) are the SAME 4
+# active nodes, so cluster membership doesn't change here either. The point
+# isn't to add/remove anything; it's to exercise the full accelerated-
+# rebalance pipeline (prepareRebalance -> manifest split/sync -> accelerator
+# -> start rebalance) as a real post-recovery check, not just a REST status
+# poll, confirming the restarted node's Fusion state is genuinely back in
+# sync rather than just reachable.
+- template: fusion_rebalance
+  args: "{{.Orchestrator}}, ({{.ActiveDataNode 0}},{{.ActiveDataNode 1}},{{.ActiveDataNode 2}},{{.ActiveDataNode 3}}), ({{.ActiveDataNode 0}},{{.ActiveDataNode 1}},{{.ActiveDataNode 2}},{{.ActiveDataNode 3}}), 60, 1"
+  wait: true
+
+# fusion_rebalance's own script returns as soon as its POST /controller/rebalance
+# call succeeds -- it does NOT block until the rebalance itself finishes. The
+# actual data movement (and guest-volume drain) happens after this returns, so
+# wait for the cluster-level rebalance to genuinely complete before checking
+# anything about guest volumes.
+- template: wait_for_rebalance
+  wait: true
+
+# buffer before polling for drain -- gives extent migration a moment to
+# actually get underway if it hasn't already, so the drain-check below
+# doesn't catch a false "empty" before migration starts. Doesn't fully
+# replace TAF's seen_volumes gate (see the template's own comment in
+# tests/templates/fusion.yml), just reduces the same risk.
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "30"
+  wait: true
+
+- template: wait_for_guest_volumes_drained
+  wait: true
+
+- section_end: node_outage
+
+############### verify: no topology change, fusion still healthy ################
+- section_start: verify_fusion
+
+- template: get_fusion_status
+  wait: true
+
+# should be empty now -- wait_for_guest_volumes_drained above already
+# confirmed this; fetched again here just to have it in this section's logs
+- template: get_active_guest_volumes
+  wait: true
+
+# confirm cluster membership is unchanged -- still 4 active nodes, all healthy
+- image: appropriate/curl
+  command: "-s -u {{.RestUsername}}:{{.RestPassword}} {{.Orchestrator}}:{{.RestPort}}/pools/default"
+  wait: true
+
+- section_end: verify_fusion

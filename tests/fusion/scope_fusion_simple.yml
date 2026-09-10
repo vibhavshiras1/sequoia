@@ -1,0 +1,22 @@
+---
+# NOTE: no `buckets:` block here on purpose. Sequoia's scope.SetupServer()
+# (lib/scope.go:158, s.CreateBuckets()) runs bucket creation as part of the
+# same atomic setup pipeline as node-init/cluster-init -- entirely BEFORE
+# any action in test_fusion_simple.yml executes, including configure_fusion
+# / enable_fusion. Fusion must be enabled before a Fusion-backed bucket is
+# created (matches TAF's storage_base.py ordering: configure_fusion() ->
+# enable_fusion() -> THEN create buckets). So the "default" bucket is
+# created explicitly in test_fusion_simple.yml, after enable_fusion, instead
+# of being declared here.
+
+servers: # each server tag represents a cluster
+  -
+      name: local
+      count: 2
+      ram: 70%
+      rest_username: Administrator
+      rest_password: password
+      ssh_username: root
+      ssh_password: couchbase
+      data_path: "/data/dta"
+      init_nodes: 1 # 1 spare node left out, used by test_fusion_simple.yml's fusion_rebalance demo

@@ -1,0 +1,50 @@
+# reusable templates for setting up an NFS server + client mounts, used by
+# Fusion tests (see tests/fusion/CLAUDE.md).
+#
+# Requires the `file` provider with an `nfs_server:<IP>` entry in the hosts
+# file -- {{.NfsServer}} only resolves there (see commit 6321ea1ad4).
+#
+# The setup scripts (tests/fusion/scripts/setup_nfs_server.sh and
+# setup_nfs_client.sh, copied verbatim from TAF's scripts/fusion_scripts/)
+# are staged onto the target host via a single SSH command using the
+# file_base64 template function, since CompileCommand collapses all
+# whitespace/newlines and can't carry a heredoc -- base64 has none.
+
+# Install nfs-kernel-server and export /data/nfs/share on the NFS server.
+-
+  name: setup_nfs_server
+  actions:
+    -
+      image: sequoiatools/cmd
+      command: "sshpass -p {{.SSHPassword}} ssh -o StrictHostKeyChecking=no
+                {{.SSHUsername}}@{{.NfsServer}}
+                'mkdir -p /root/nfs_scripts &&
+                echo {{file_base64 \"tests/fusion/scripts/setup_nfs_server.sh\"}} | base64 -d > /root/nfs_scripts/setup_nfs_server.sh &&
+                chmod +x /root/nfs_scripts/setup_nfs_server.sh &&
+                bash /root/nfs_scripts/setup_nfs_server.sh'"
+      wait: true
+
+# Mount the NFS share at /mnt/nfs/share on a single Couchbase node.
+# $0 = node to mount the share on
+-
+  name: setup_nfs_client
+  actions:
+    -
+      image: sequoiatools/cmd
+      command: "sshpass -p {{.SSHPassword}} ssh -o StrictHostKeyChecking=no
+                {{.SSHUsername}}@$0
+                'mkdir -p /root/nfs_scripts &&
+                echo {{file_base64 \"tests/fusion/scripts/setup_nfs_client.sh\"}} | base64 -d > /root/nfs_scripts/setup_nfs_client.sh &&
+                chmod +x /root/nfs_scripts/setup_nfs_client.sh &&
+                bash /root/nfs_scripts/setup_nfs_client.sh {{.NfsServer}}'"
+
+# Mount the NFS share on every Couchbase node declared in the scope
+# (regardless of whether it's active in the cluster yet -- a spare node
+# used later for a fusion_rebalance rebalance-in still needs the mount).
+-
+  name: setup_nfs_client_all_nodes
+  actions:
+    -
+      foreach: "{{range $i, $node := (index .Nodes 0).Names}}"
+      template: setup_nfs_client
+      args: "{{$node | to_ip}}"

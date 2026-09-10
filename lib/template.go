@@ -7,9 +7,11 @@ package sequoia
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"math/rand"
 	"net"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -42,6 +44,7 @@ func ParseTemplate(s *Scope, command string) string {
 		"mkrange":           tResolv.MkRange,
 		"to_ip":             tResolv.ToIp,
 		"active":            tResolv.ActiveFilter,
+		"file_base64":       tResolv.FileBase64,
 	}
 	tmpl, err := template.New("t").Funcs(netFunc).Parse(command)
 	logerr(err)
@@ -789,6 +792,19 @@ func (t *TemplateResolver) ToDoubleQuotes(data string) interface{} {
 func (t *TemplateResolver) WrapSingleQuote(data string) interface{} {
 	// wraps input string with single quotes
 	return fmt.Sprintf("'%s'", data)
+}
+
+// FileBase64 reads a file from the local sequoia checkout (path relative to
+// the working directory the sequoia binary is run from) and returns its
+// contents as a base64 string with no internal whitespace, so it survives
+// CompileCommand's whitespace collapsing and can be piped through a single
+// SSH command, e.g.:
+//
+//	ssh $0 'echo {{file_base64 "tests/fusion/scripts/run_local_accelerator.sh"}} | base64 -d > /root/fusion/run_local_accelerator.sh'
+func (t *TemplateResolver) FileBase64(path string) string {
+	data, err := os.ReadFile(path)
+	logerr(err)
+	return base64.StdEncoding.EncodeToString(data)
 }
 
 func (t *TemplateResolver) ToList(spec ServerSpec) []ServerSpec {

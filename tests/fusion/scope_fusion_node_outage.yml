@@ -1,0 +1,19 @@
+---
+# NOTE: no `buckets:` block on purpose -- see the note in scope_fusion_simple.yml
+# and tests/fusion/CLAUDE.md ("The bucket is not declared in scope_fusion_simple.yml").
+# Fusion must be enabled before a Fusion-backed bucket is created, and
+# scope.SetupServer()'s automatic bucket creation runs before any test
+# action does -- so all 10 buckets here are created explicitly in
+# test_fusion_node_outage.yml, after enable_fusion.
+
+servers: # each server tag represents a cluster
+  -
+      name: local
+      count: 6
+      ram: 10500 # absolute MB per node (not a %), per-node KV mem quota
+      rest_username: Administrator
+      rest_password: password
+      ssh_username: root
+      ssh_password: couchbase
+      data_path: "/data/dta"
+      init_nodes: 4 # 2 spare nodes held out for fusion_rebalance operations

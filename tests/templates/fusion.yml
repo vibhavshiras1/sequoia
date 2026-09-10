@@ -1,0 +1,192 @@
+# reusable templates for Fusion (disaggregated storage) tests
+#
+# Configure the cluster-wide Fusion log store URI.
+# Must be called before any Fusion-backed (magma) buckets are created.
+# $0 = log store URI, e.g. local:///mnt/nfs/share/buckets
+-
+  name: configure_fusion
+  actions:
+    -
+      image: appropriate/curl
+      command: "-X POST -u {{.RestUsername}}:{{.RestPassword}}
+                {{.Orchestrator}}:{{.RestPort}}/settings/fusion
+                -d logStoreURI=$0"
+
+# Enable Fusion cluster-wide, or for a specific comma-separated bucket list.
+# $0 = optional comma separated bucket list
+-
+  name: enable_fusion
+  actions:
+    -
+      image: appropriate/curl
+      command: "-X POST -u {{.RestUsername}}:{{.RestPassword}}
+                {{.Orchestrator}}:{{.RestPort}}/fusion/enable
+                {{if gt (len `$0`) 2}}-d buckets=$0{{end}}"
+
+# Disable Fusion cluster-wide.
+-
+  name: disable_fusion
+  actions:
+    -
+      image: appropriate/curl
+      command: "-X POST -u {{.RestUsername}}:{{.RestPassword}}
+                {{.Orchestrator}}:{{.RestPort}}/fusion/disable"
+
+# Force an immediate sync of pending mutations to the Fusion log store,
+# instead of waiting for the periodic upload interval. Mirrors
+# FusionFunctions.sync_log_store() in TAF (POST /controller/fusion/syncLogStore).
+-
+  name: sync_log_store
+  actions:
+    -
+      image: appropriate/curl
+      command: "-X POST -u {{.RestUsername}}:{{.RestPassword}}
+                {{.Orchestrator}}:{{.RestPort}}/controller/fusion/syncLogStore"
+
+# Poll /fusion/status until it reaches the given state (e.g. "enabled").
+# $0 = desired state
+-
+  name: wait_for_fusion_status
+  actions:
+    -
+      image: appropriate/curl
+      command: "-s -u {{.RestUsername}}:{{.RestPassword}}
+                {{.Orchestrator}}:{{.RestPort}}/fusion/status"
+      repeat: -1
+      until: "{{if .AllLogs `__self__`}}
+                {{with $sample:=(.TailLogs `__self__` 1 | json)}}
+                  {{eq `$0` $sample.state}}
+                {{else}}
+                  {{false}}
+                {{end}}
+              {{else}}
+                {{false}}
+              {{end}}"
+
+# Fetch current Fusion status (for logging / debugging).
+-
+  name: get_fusion_status
+  actions:
+    -
+      image: appropriate/curl
+      command: "-s -u {{.RestUsername}}:{{.RestPassword}}
+                {{.Orchestrator}}:{{.RestPort}}/fusion/status"
+
+# Fetch the list of currently active guest volumes (non-empty while
+# extent migration is still in progress after a rebalance).
+-
+  name: get_active_guest_volumes
+  actions:
+    -
+      image: appropriate/curl
+      command: "-s -u {{.RestUsername}}:{{.RestPassword}}
+                {{.Orchestrator}}:{{.RestPort}}/fusion/activeGuestVolumes"
+
+# Poll /fusion/activeGuestVolumes until every node's guest-volume list is
+# empty -- i.e. extent migration has fully drained after a rebalance.
+# The response is a map of node -> list of active guest volumes
+# (fusion_base.py's monitor_active_guest_volumes(): "for guests in
+# content.values(): all_guests.extend(guests)"), not a flat list, so
+# "drained" means every value in the map is empty, not that the response
+# itself is empty.
+#
+# This checks only the LATEST poll, same rigor as wait_for_rebalance
+# (tests/templates/rebalance.yml) -- TAF's own monitor requires 3
+# consecutive empty polls before declaring victory, which Sequoia can't
+# cleanly replicate here: repeat:-1 restarts the same container, so
+# TailLogs with a tail > 1 returns multiple raw JSON lines concatenated,
+# which Sequoia's `json` helper (one json.Unmarshal call) can't parse as
+# one value. Single-latest-poll is a real simplification, not equivalent
+# rigor -- flagging it rather than pretending otherwise.
+-
+  name: wait_for_guest_volumes_drained
+  actions:
+    -
+      image: appropriate/curl
+      command: "-s -u {{.RestUsername}}:{{.RestPassword}}
+                {{.Orchestrator}}:{{.RestPort}}/fusion/activeGuestVolumes"
+      repeat: -1
+      until: "{{if .AllLogs `__self__`}}
+                {{with $sample:=(.TailLogs `__self__` 1 | json)}}
+                  {{$allEmpty := true}}
+                  {{range $node, $guests := $sample}}{{if gt (len $guests) 0}}{{$allEmpty = false}}{{end}}{{end}}
+                  {{$allEmpty}}
+                {{else}}
+                  {{false}}
+                {{end}}
+              {{else}}
+                {{false}}
+              {{end}}"
+
+# --- Fusion-accelerated rebalance -----------------------------------------
+#
+# A Fusion rebalance is not a plain couchbase-cli/REST rebalance: it runs
+# TAF's run_fusion_rebalance.py (copied verbatim into tests/fusion/scripts/,
+# see tests/fusion/CLAUDE.md), which drives prepareRebalance -> manifest
+# split/sync -> accelerator pre-copy on every involved node -> start
+# rebalance. That script shells out locally to
+# /opt/couchbase/bin/fusion/accelerator-cli and touches the local NFS mount,
+# so it can only run FROM an actual Couchbase node (not a generic Sequoia
+# driver container) -- exactly like TAF runs it from the cluster master.
+#
+# stage_fusion_rebalance_scripts_all_nodes must run once before the first
+# fusion_rebalance call.
+
+# Stage the Fusion rebalance driver + accelerator script + config onto a
+# single Couchbase node's local disk at /root/fusion/. run_local_accelerator.sh
+# and config.json must be present on every node that could be involved in a
+# rebalance (run_fusion_rebalance.py invokes them over SSH from wherever it
+# runs); run_fusion_rebalance.py itself only needs to exist on whichever node
+# actually drives the rebalance, but staging it everywhere keeps this
+# template reusable regardless of which node ends up driving.
+# $0 = node to stage scripts on
+-
+  name: stage_fusion_rebalance_scripts
+  actions:
+    -
+      image: sequoiatools/cmd
+      command: "sshpass -p {{.SSHPassword}} ssh -o StrictHostKeyChecking=no
+                {{.SSHUsername}}@$0
+                'mkdir -p /root/fusion &&
+                echo {{file_base64 \"tests/fusion/scripts/run_fusion_rebalance.py\"}} | base64 -d > /root/fusion/run_fusion_rebalance.py &&
+                echo {{file_base64 \"tests/fusion/scripts/run_local_accelerator.sh\"}} | base64 -d > /root/fusion/run_local_accelerator.sh &&
+                echo {{file_base64 \"tests/fusion/scripts/config.json\"}} | base64 -d > /root/fusion/config.json &&
+                chmod +x /root/fusion/run_fusion_rebalance.py /root/fusion/run_local_accelerator.sh'"
+
+# Stage the Fusion rebalance scripts on every Couchbase node in the scope.
+-
+  name: stage_fusion_rebalance_scripts_all_nodes
+  actions:
+    -
+      foreach: "{{range $i, $node := (index .Nodes 0).Names}}"
+      template: stage_fusion_rebalance_scripts
+      args: "{{$node | to_ip}}"
+
+# Run a Fusion-accelerated rebalance, driven from a live Couchbase node.
+# Builds a fresh venv on $0 (matching fusion_base.py::run_rebalance) since
+# run_fusion_rebalance.py needs paramiko + requests, which aren't guaranteed
+# to be present in the Couchbase server image's system python.
+#
+# $0 = node to drive the rebalance from (must already be in the cluster;
+#      needs run_fusion_rebalance.py staged there)
+# $1 = current cluster nodes, comma separated IPs
+# $2 = new topology nodes (post-rebalance), comma separated IPs
+# $3 = seconds to sleep after prepareRebalance before splitting the manifest
+# $4 = rebalance count (used for output file naming / rebalanceID)
+-
+  name: fusion_rebalance
+  actions:
+    -
+      image: sequoiatools/cmd
+      command: "sshpass -p {{.SSHPassword}} ssh -o StrictHostKeyChecking=no
+                {{.SSHUsername}}@$0
+                'rm -rf /root/fusion/venv &&
+                python3 -m venv /root/fusion/venv &&
+                /root/fusion/venv/bin/pip install --quiet paramiko requests &&
+                /root/fusion/venv/bin/python3 /root/fusion/run_fusion_rebalance.py
+                --current-nodes $1 --new-nodes $2
+                --base-url http://{{.Orchestrator}}:{{.RestPort}}
+                --username {{.RestUsername}} --password {{.RestPassword}}
+                --env local --config /root/fusion/config.json
+                --sleep-time $3 --reb-count $4 --log-store nfs'"
+      wait: true

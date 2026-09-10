@@ -534,8 +534,10 @@ func (cm *ContainerManager) pullImage(client *docker.Client, repo string, ch cha
 		}
 	}
 
-	auths, _ := docker.NewAuthConfigurationsFromDockerCfg()
-	auth := auths.Configs["https://index.docker.io/v1/"]
+	var auth docker.AuthConfiguration
+	if auths, err := docker.NewAuthConfigurationsFromDockerCfg(); err == nil && auths != nil {
+		auth = auths.Configs["https://index.docker.io/v1/"]
+	}
 	err := client.PullImage(imgOpts, auth)
 	ch <- err
 	cm.imageStatus[repo] = "y"
