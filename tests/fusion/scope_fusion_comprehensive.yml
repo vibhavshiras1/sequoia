@@ -1,0 +1,49 @@
+---
+# NOTE: no `buckets:` block, same reasoning as scope_fusion_simple.yml and
+# scope_fusion_node_outage.yml -- Fusion must be enabled before a
+# Fusion-backed bucket is created, and scope.SetupServer()'s automatic
+# bucket creation runs before any test action does. All buckets here are
+# created explicitly in test_fusion_comprehensive.yml, after enable_fusion.
+#
+# 10 nodes total, init_nodes: 8 -- service assignment (lib/spec.go,
+# InitNodeServices()) only operates over the first `init_nodes` nodes, so
+# nodes 8 and 9 (outside that range) are never assigned any service and stay
+# plain, untouched spares -- reserved for the fusion_rebalance topology
+# changes in test_fusion_comprehensive.yml (rebalance-in, rebalance-out,
+# swap), not accidentally the analytics/eventing/index/query node. Two
+# spares, not one, because a swap rebalance needs a node to bring in at the
+# same time as one goes out -- one spare only covers rebalance-in.
+#
+# With services: {index:1, query:1, eventing:1, analytics:1} against
+# init_nodes: 8, positions work out to (see InitNodeServices' startPos math):
+#   nodes 0-3: plain KV/data (Fusion-backed buckets live here)
+#   node 4:    analytics
+#   node 5:    eventing
+#   node 6:    index
+#   node 7:    query
+#   node 8,9:  spares (outside init_nodes -- untouched)
+#
+# test_fusion_comprehensive.yml addresses nodes by raw scope position
+# ({{.Nodes | net N}}) rather than by live active/inactive status once it
+# starts chaining multiple sequential rebalances -- .ActiveDataNode/
+# .InActiveNode re-resolve against current cluster state each time they're
+# evaluated, so they stop meaning "the same physical node" once membership
+# has already changed once. {{.Nodes | net N}} is Scope.Spec.Servers[0]
+# .Names[N] -- purely static, unaffected by any of that.
+
+servers: # each server tag represents a cluster
+  -
+      name: local
+      count: 10
+      ram: 60%
+      services:
+        index: 1
+        query: 1
+        eventing: 1
+        analytics: 1
+      rest_username: Administrator
+      rest_password: password
+      ssh_username: root
+      ssh_password: couchbase
+      data_path: "/data/dta"
+      init_nodes: 8
