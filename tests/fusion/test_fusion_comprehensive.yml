@@ -199,14 +199,18 @@
 # it needs to stay a genuine cluster member throughout, not just an
 # externally-reachable box that fusion_rebalance has since rebalanced out.
 #
-# GSI/N1QL, eventing, and analytics are all live on the cluster through all
-# three rebalances -- that concurrency is as much the point as the
-# rebalances themselves.
+# The "current"/"new" node sets below are the 3 plain KV/data nodes
+# (net0, net1, net3) plus the 2 spares (net4, net5) -- net2, the combined
+# analytics+eventing+index+query node (scope_fusion_comprehensive.yml), is
+# deliberately never a rebalance participant here, so GSI/N1QL, eventing,
+# and analytics stay live and reachable on the cluster through all three
+# rebalances -- that concurrency is as much the point as the rebalances
+# themselves.
 - section_start: fusion_rebalance_topology_changes
 
-# 1. rebalance-in: node 8 (spare) joins. {net0,net1,net2,net3} -> +net8
+# 1. rebalance-in: node 4 (spare) joins. {net0,net1,net3} -> +net4
 - template: fusion_rebalance
-  args: "{{.Orchestrator}}, ({{.Nodes | net 0}},{{.Nodes | net 1}},{{.Nodes | net 2}},{{.Nodes | net 3}}), ({{.Nodes | net 0}},{{.Nodes | net 1}},{{.Nodes | net 2}},{{.Nodes | net 3}},{{.Nodes | net 8}}), 60, 1"
+  args: "{{.Orchestrator}}, ({{.Nodes | net 0}},{{.Nodes | net 1}},{{.Nodes | net 3}}), ({{.Nodes | net 0}},{{.Nodes | net 1}},{{.Nodes | net 3}},{{.Nodes | net 4}}), 60, 1"
   wait: true
 - template: wait_for_rebalance
   wait: true
@@ -217,10 +221,10 @@
 - template: wait_for_guest_volumes_drained
   wait: true
 
-# 2. rebalance-out: node 8 leaves again, back to the original 4.
-# {net0,net1,net2,net3,net8} -> -net8
+# 2. rebalance-out: node 4 leaves again, back to the original 3.
+# {net0,net1,net3,net4} -> -net4
 - template: fusion_rebalance
-  args: "{{.Orchestrator}}, ({{.Nodes | net 0}},{{.Nodes | net 1}},{{.Nodes | net 2}},{{.Nodes | net 3}},{{.Nodes | net 8}}), ({{.Nodes | net 0}},{{.Nodes | net 1}},{{.Nodes | net 2}},{{.Nodes | net 3}}), 60, 2"
+  args: "{{.Orchestrator}}, ({{.Nodes | net 0}},{{.Nodes | net 1}},{{.Nodes | net 3}},{{.Nodes | net 4}}), ({{.Nodes | net 0}},{{.Nodes | net 1}},{{.Nodes | net 3}}), 60, 2"
   wait: true
 - template: wait_for_rebalance
   wait: true
@@ -231,10 +235,10 @@
 - template: wait_for_guest_volumes_drained
   wait: true
 
-# 3. swap: node 9 (the second spare) in, node 1 out, in the same rebalance.
-# {net0,net1,net2,net3} -> {net0,net2,net3,net9}
+# 3. swap: node 5 (the second spare) in, node 1 out, in the same rebalance.
+# {net0,net1,net3} -> {net0,net3,net5}
 - template: fusion_rebalance
-  args: "{{.Orchestrator}}, ({{.Nodes | net 0}},{{.Nodes | net 1}},{{.Nodes | net 2}},{{.Nodes | net 3}}), ({{.Nodes | net 0}},{{.Nodes | net 2}},{{.Nodes | net 3}},{{.Nodes | net 9}}), 60, 3"
+  args: "{{.Orchestrator}}, ({{.Nodes | net 0}},{{.Nodes | net 1}},{{.Nodes | net 3}}), ({{.Nodes | net 0}},{{.Nodes | net 3}},{{.Nodes | net 5}}), 60, 3"
   wait: true
 - template: wait_for_rebalance
   wait: true
