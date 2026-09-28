@@ -71,7 +71,7 @@
 - command: "bucket-create -c {{.Orchestrator}}:{{.RestPort}} -u {{.RestUsername}} -p {{.RestPassword}}
             --bucket metabucket --bucket-ramsize 512 --bucket-type couchbase
             --bucket-replica 1 --bucket-eviction-policy fullEviction
-            --storage-backend couchstore --num-vbuckets 128 --enable-flush 1 --wait"
+            --storage-backend couchstore --enable-flush 1 --wait"
   requires: "{{eq true .DoOnce }}"
   wait: true
 
@@ -89,14 +89,14 @@
 ############### load data ################
 - section_start: data_load
 
-# bucket1/bucket2: default collection, small and short-running on purpose
+# bucket1/bucket2: default collection
 - image: sequoiatools/pillowfight:7.0
   command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket1
-            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body --json --populate-only"
+            -I {{.Scale 1000000}} -M 1024 -B 100 -t 4 --random-body --json --populate-only"
   requires: "{{eq true .DoOnce }}"
   wait: true
 - command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket2
-            -I {{.Scale 10000}} -M 1024 -B 100 -t 4 --random-body --json --populate-only"
+            -I {{.Scale 1000000}} -M 1024 -B 100 -t 4 --random-body --json --populate-only"
   requires: "{{eq true .DoOnce }}"
   wait: true
 
