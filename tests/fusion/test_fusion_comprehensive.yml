@@ -90,7 +90,7 @@
 - section_start: gsi_n1ql
 
 - template: cbq
-  args: "'create index idx_bucket1_default on `bucket1` using GSI'"
+  args: "'create index idx_bucket1_default on `bucket1`.`_default`.`_default`(Field_1, Field_2) using GSI'"
   requires: "{{eq true .DoOnce }}"
   wait: true
 
@@ -141,6 +141,27 @@
 # themselves.
 - section_start: fusion_rebalance_topology_changes
 
+# Concurrent write + query workload, running the whole time node membership
+# is changing below -- exercises GSI index maintenance (idx_bucket1_default
+# on Field_1/Field_2) under concurrent mutation, not just querying a static
+# index before/after. Both launched async (no `wait`, so they don't block
+# the rebalances that follow) and explicitly killed once this section ends
+# rather than given their own duration, since the actual rebalance time
+# here is unpredictable. pillowfight without --populate-only re-randomizes
+# --random-body on every op, so hitting the same already-populated key
+# range is genuine updates (Field_1/Field_2 change value), not just inserts.
+- image: sequoiatools/pillowfight:7.0
+  command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket1
+            -I {{.Scale 1000000}} -M 1024 -B 100 -t 4 --random-body --json"
+  alias: rebalance_write_load
+  requires: "{{eq true .DoOnce }}"
+
+- template: attack_query
+  args: "0, 5, {{.QueryNodePort}},
+        select count(*) from `bucket1` where Field_1 is not null"
+  alias: rebalance_query_load
+  requires: "{{eq true .DoOnce }}"
+
 # 1. rebalance-in: node 4 (spare) joins. {net0,net1,net2,net3} -> +net4
 - template: fusion_rebalance
   args: "{{.Orchestrator}}, ({{.Nodes | net 0}},{{.Nodes | net 1}},{{.Nodes | net 2}},{{.Nodes | net 3}}), ({{.Nodes | net 0}},{{.Nodes | net 1}},{{.Nodes | net 2}},{{.Nodes | net 3}},{{.Nodes | net 4}}), 60, 1"
@@ -181,6 +202,15 @@
   wait: true
 - template: wait_for_guest_volumes_drained
   wait: true
+
+# stop the concurrent write/query workload now that all three topology
+# changes are done
+- client:
+    op: kill
+    container: rebalance_write_load
+- client:
+    op: kill
+    container: rebalance_query_load
 
 - section_end: fusion_rebalance_topology_changes
 
