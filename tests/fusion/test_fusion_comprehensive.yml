@@ -89,8 +89,23 @@
 ############### basic GSI + N1QL ################
 - section_start: gsi_n1ql
 
-- template: cbq
-  args: "'create index idx_bucket1_default on `bucket1`.`_default`.`_default`(Field_1, Field_2) using GSI'"
+# NOT going through `template: cbq`/`args:` here -- ResolveTemplateActions
+# (lib/test.go) splits args on every top-level comma first, then treats any
+# "(...)" it finds as a pure grouping delimiter and strips the literal
+# parens once the pieces are rejoined (the same mechanism that turns
+# fusion_rebalance's "(ip1,ip2,ip3)" arg into a plain ip1,ip2,ip3 list). Our
+# query needs a literal, surviving "(Field_1, Field_2)" -- both a comma and
+# parens -- which that mechanism can't produce; it mangled this into
+# "...`_default`Field_1,Field_2 using GSI" (parens stripped) and failed.
+# Writing the cbq container action directly sidesteps the splitter
+# entirely -- `command:` only goes through ParseTemplate, never args
+# splitting -- at the cost of duplicating what the cbq template
+# (tests/templates/n1ql.yml) would otherwise generate.
+- image: sequoiatools/cbq:dev
+  command: "-e=http://{{.Orchestrator}}:{{.RestPort}}
+            -u={{.RestUsername}}
+            -p={{.RestPassword}}
+            -script=\"'create index idx_bucket1_default on `bucket1`.`_default`.`_default`(Field_1, Field_2) using GSI'\""
   requires: "{{eq true .DoOnce }}"
   wait: true
 
