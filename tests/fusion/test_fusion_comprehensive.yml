@@ -101,19 +101,36 @@
 # entirely -- `command:` only goes through ParseTemplate, never args
 # splitting -- at the cost of duplicating what the cbq template
 # (tests/templates/n1ql.yml) would otherwise generate.
+#
+# -script uses single quotes only, no surrounding double quotes -- the
+# sequoiatools/cbq:dev entrypoint is exec-form (no shell), so nothing ever
+# strips a "..." wrapper; CompileCommand (lib/scope.go) only recognizes and
+# fully consumes '...' (both quote chars removed once tokens are glued
+# back together), so that's the only wrapping that leaves the actual
+# -script value clean. Confirmed by running this exact call: with the
+# double-quote wrapper, `docker logs` showed cbq receiving the literal
+# quote characters as part of the script text and rejecting it with a
+# syntax error right at the trailing `"`.
 - image: sequoiatools/cbq:dev
   command: "-e=http://{{.Orchestrator}}:{{.RestPort}}
             -u={{.RestUsername}}
             -p={{.RestPassword}}
-            -script=\"'create index idx_bucket1_default on `bucket1`.`_default`.`_default`(Field_1, Field_2) using GSI'\""
+            -script='create index idx_bucket1_default on `bucket1`.`_default`.`_default`(Field_1, Field_2) using GSI'"
   requires: "{{eq true .DoOnce }}"
   wait: true
 
 # no separate build-wait needed -- no defer_build above, so this index
 # already built synchronously as part of the create statement
 
-- template: cbq
-  args: "'select count(*) from `bucket1`'"
+# direct action, not `template: cbq`/`args:` -- same parens-in-args issue
+# as the create index call above (count(*) needs literal, surviving
+# parens); single-quote-only wrapping for the same reason too, see that
+# call's comment
+- image: sequoiatools/cbq:dev
+  command: "-e=http://{{.Orchestrator}}:{{.RestPort}}
+            -u={{.RestUsername}}
+            -p={{.RestPassword}}
+            -script='select count(*) from `bucket1`'"
   wait: true
 
 - section_end: gsi_n1ql
@@ -171,9 +188,13 @@
   alias: rebalance_write_load
   requires: "{{eq true .DoOnce }}"
 
+# query text has no parens on purpose -- attack_query's own `-body $3` has
+# no quote-wrapping to protect literal parens through CompileCommand/args
+# splitting the way the cbq calls above do, and a plain WHERE-clause select
+# still exercises idx_bucket1_default just as well as count(*) would.
 - template: attack_query
   args: "0, 5, {{.QueryNodePort}},
-        select count(*) from `bucket1` where Field_1 is not null"
+        select Field_1 from `bucket1` where Field_1 is not null limit 10"
   alias: rebalance_query_load
   requires: "{{eq true .DoOnce }}"
 
@@ -235,8 +256,12 @@
 - template: get_fusion_status
   wait: true
 
-- template: cbq
-  args: "'select count(*) from `bucket1`'"
+# direct action, not `template: cbq`/`args:` -- see gsi_n1ql section above
+- image: sequoiatools/cbq:dev
+  command: "-e=http://{{.Orchestrator}}:{{.RestPort}}
+            -u={{.RestUsername}}
+            -p={{.RestPassword}}
+            -script='select count(*) from `bucket1`'"
   wait: true
 
 - section_end: verify_fusion
