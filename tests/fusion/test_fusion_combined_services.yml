@@ -1,0 +1,249 @@
+- include: tests/templates/fusion.yml, tests/templates/nfs.yml, tests/templates/kv.yml, tests/templates/rebalance.yml, tests/templates/n1ql.yml
+
+# Tests Fusion rebalance against a node that carries KV + index + query
+# TOGETHER (scope_fusion_combined_services.yml), as opposed to
+# test_fusion_comprehensive.yml which keeps index/query isolated on their
+# own node, separate from every KV/data node. Three topology changes, in
+# the order requested:
+#   1. add a second combined (KV+index+query) node
+#   2. swap the original combined node out for a third one
+#   3. rebalance one combined node back out entirely -- ends with exactly
+#      one combined node again (added in step 1), not a plain-KV-only
+#      cluster
+#
+# The combined node's services never get decided by run_fusion_rebalance.py
+# itself -- its own add_nodes() always adds KV-only (see the fusion_rebalance
+# template's $5 doc in tests/templates/fusion.yml) -- so every node this
+# test adds is explicitly server-added first with --services
+# data,index,query, then fusion_rebalance is called with its new $5
+# skip-add-nodes arg so it doesn't also try (and fail) to add it again.
+
+############### set up NFS server + client mounts ################
+- section_start: setup_nfs
+
+- template: setup_nfs_server
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- template: setup_nfs_client_all_nodes
+  requires: "{{eq true $.DoOnce }}"
+  wait: true
+
+- section_end: setup_nfs
+
+############### configure and enable fusion ################
+- section_start: setup_fusion
+
+- template: configure_fusion
+  args: "local:///mnt/nfs/share/buckets"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- template: enable_fusion
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- template: wait_for_fusion_status
+  args: "enabled"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- section_end: setup_fusion
+
+############### create bucket ################
+- section_start: create_buckets
+
+- image: sequoiatools/couchbase-cli:8.5
+  command: "bucket-create -c {{.Orchestrator}}:{{.RestPort}} -u {{.RestUsername}} -p {{.RestPassword}}
+            --bucket bucket1 --bucket-ramsize 1024 --bucket-type couchbase
+            --bucket-replica 1 --bucket-eviction-policy fullEviction
+            --storage-backend magma --num-vbuckets 128 --enable-flush 1 --wait"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- section_end: create_buckets
+
+############### stage the fusion rebalance driver scripts ################
+- section_start: stage_fusion_scripts
+
+- template: stage_fusion_rebalance_scripts_all_nodes
+  requires: "{{eq true $.DoOnce }}"
+  wait: true
+
+- section_end: stage_fusion_scripts
+
+############### load data ################
+- section_start: data_load
+
+- image: sequoiatools/pillowfight:7.0
+  command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket1
+            -I {{.Scale 500000}} -M 1024 -B 100 -t 4 --random-body --json --populate-only"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- section_end: data_load
+
+############### basic GSI + N1QL ################
+- section_start: gsi_n1ql
+
+# direct action, not `template: cbq`/`args:` -- ResolveTemplateActions
+# (lib/test.go) splits args on every top-level comma, then strips any
+# literal "(...)" it finds once the pieces are rejoined -- fine for a plain
+# CSV-in-parens like fusion_rebalance's node lists, fatal for a query that
+# needs a literal, surviving "(Field_1, Field_2)". Single-quote-only
+# wrapping (no outer double quotes) because the sequoiatools/cbq:dev
+# entrypoint is exec-form (no shell to strip a "..." wrapper) --
+# CompileCommand (lib/scope.go) only recognizes and fully consumes '...'.
+# Both lessons learned the hard way on test_fusion_comprehensive.yml; see
+# its gsi_n1ql section for the full writeup.
+- image: sequoiatools/cbq:dev
+  command: "-e=http://{{.Orchestrator}}:{{.RestPort}}
+            -u={{.RestUsername}}
+            -p={{.RestPassword}}
+            -script='create index idx_bucket1_default on `bucket1`.`_default`.`_default`(Field_1, Field_2) using GSI'"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+# no separate build-wait needed -- no defer_build above, so this index
+# already built synchronously as part of the create statement
+
+- image: sequoiatools/cbq:dev
+  command: "-e=http://{{.Orchestrator}}:{{.RestPort}}
+            -u={{.RestUsername}}
+            -p={{.RestPassword}}
+            -script='select count(*) from `bucket1`'"
+  wait: true
+
+- section_end: gsi_n1ql
+
+############### force fusion log store sync ################
+- section_start: sync_log_store
+
+- template: sync_log_store
+  wait: true
+
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "120"
+  wait: true
+
+- section_end: sync_log_store
+
+############### fusion rebalance: add / swap / remove the combined node ###
+# All three use {{.Nodes | net N}} -- raw position in this scope's declared
+# node list, not .ActiveDataNode/.InActiveNode -- those re-resolve against
+# live cluster state each time they're evaluated, so once the first of
+# these changes has run, they no longer point at the same physical node
+# they did before it (same reasoning as test_fusion_comprehensive.yml).
+# net0 ({{.Orchestrator}}) is never touched -- it's the fusion_rebalance
+# driver and every REST check here targets it, so it needs to stay a
+# genuine cluster member throughout.
+#
+# Concurrent write + query workload spans all three changes below, same
+# pattern as test_fusion_comprehensive.yml: exercises GSI index maintenance
+# (idx_bucket1_default) under concurrent mutation while node membership
+# (and which node even HAS the index service) keeps changing underneath
+# it. Both launched async and explicitly killed once this section ends.
+- section_start: fusion_topology_changes
+
+- image: sequoiatools/pillowfight:7.0
+  command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket1
+            -I {{.Scale 500000}} -M 1024 -B 100 -t 4 --random-body --json"
+  alias: combined_write_load
+  requires: "{{eq true .DoOnce }}"
+
+# query text has no parens on purpose -- attack_query's own `-body $3` has
+# no quote-wrapping to protect literal parens the way the direct cbq
+# actions above do.
+- template: attack_query
+  args: "0, 5, {{.QueryNodePort}},
+        select Field_1 from `bucket1` where Field_1 is not null limit 10"
+  alias: combined_query_load
+  requires: "{{eq true .DoOnce }}"
+
+# 1. add: node 3 (spare) joins as a SECOND combined KV+index+query node.
+# {net0,net1,net2} -> +net3
+- image: sequoiatools/couchbase-cli:8.5
+  command: "server-add -c {{.Orchestrator}}:{{.RestPort}}
+            --server-add {{.Nodes | net 3}}
+            -u {{.RestUsername}} -p {{.RestPassword}}
+            --server-add-username {{.RestUsername}} --server-add-password {{.RestPassword}}
+            --services data,index,query"
+  wait: true
+- template: fusion_rebalance
+  args: "{{.Orchestrator}}, ({{.Nodes | net 0}},{{.Nodes | net 1}},{{.Nodes | net 2}}), ({{.Nodes | net 0}},{{.Nodes | net 1}},{{.Nodes | net 2}},{{.Nodes | net 3}}), 60, 1, skip_add"
+  wait: true
+- template: wait_for_rebalance
+  wait: true
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "30"
+  wait: true
+- template: wait_for_guest_volumes_drained
+  wait: true
+
+# 2. swap: node 2 (the ORIGINAL combined node) leaves, node 4 (spare) joins
+# as a combined KV+index+query node in its place.
+# {net0,net1,net2,net3} -> {net0,net1,net3,net4}
+- image: sequoiatools/couchbase-cli:8.5
+  command: "server-add -c {{.Orchestrator}}:{{.RestPort}}
+            --server-add {{.Nodes | net 4}}
+            -u {{.RestUsername}} -p {{.RestPassword}}
+            --server-add-username {{.RestUsername}} --server-add-password {{.RestPassword}}
+            --services data,index,query"
+  wait: true
+- template: fusion_rebalance
+  args: "{{.Orchestrator}}, ({{.Nodes | net 0}},{{.Nodes | net 1}},{{.Nodes | net 2}},{{.Nodes | net 3}}), ({{.Nodes | net 0}},{{.Nodes | net 1}},{{.Nodes | net 3}},{{.Nodes | net 4}}), 60, 2, skip_add"
+  wait: true
+- template: wait_for_rebalance
+  wait: true
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "30"
+  wait: true
+- template: wait_for_guest_volumes_drained
+  wait: true
+
+# 3. rebalance-out: node 4 (a combined node) leaves entirely, no
+# replacement. Node 3 (added in step 1, untouched by the swap in step 2)
+# is still a combined KV+index+query node -- this doesn't end up
+# KV-only, it ends up back to exactly one combined node, just node 3
+# instead of the original node 2.
+# {net0,net1,net3,net4} -> {net0,net1,net3}
+- template: fusion_rebalance
+  args: "{{.Orchestrator}}, ({{.Nodes | net 0}},{{.Nodes | net 1}},{{.Nodes | net 3}},{{.Nodes | net 4}}), ({{.Nodes | net 0}},{{.Nodes | net 1}},{{.Nodes | net 3}}), 60, 3"
+  wait: true
+- template: wait_for_rebalance
+  wait: true
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "30"
+  wait: true
+- template: wait_for_guest_volumes_drained
+  wait: true
+
+# stop the concurrent write/query workload now that all three topology
+# changes are done
+- client:
+    op: kill
+    container: combined_write_load
+- client:
+    op: kill
+    container: combined_query_load
+
+- section_end: fusion_topology_changes
+
+############### verify ################
+- section_start: verify_fusion
+
+- template: get_fusion_status
+  wait: true
+
+- image: sequoiatools/cbq:dev
+  command: "-e=http://{{.Orchestrator}}:{{.RestPort}}
+            -u={{.RestUsername}}
+            -p={{.RestPassword}}
+            -script='select count(*) from `bucket1`'"
+  wait: true
+
+- section_end: verify_fusion

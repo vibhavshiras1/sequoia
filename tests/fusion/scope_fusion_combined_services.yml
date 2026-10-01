@@ -1,0 +1,61 @@
+---
+# NOTE: no `buckets:` block -- same Fusion-before-bucket-creation reasoning
+# as scope_fusion_simple.yml / scope_fusion_comprehensive.yml. The bucket
+# here is created explicitly in test_fusion_combined_services.yml, after
+# enable_fusion.
+#
+# Unlike scope_fusion_comprehensive.yml (which keeps index/query isolated
+# on their own node, entirely separate from every KV/data node), this scope
+# tests Fusion rebalance behavior when a SINGLE node carries KV + index +
+# query TOGETHER -- the "all services" node test_fusion_combined_services.yml
+# adds a second one of, swaps, and finally rebalances back out.
+#
+# 5 nodes total, init_nodes: 3:
+#   nodes 0,1: plain KV/data
+#   node 2:    KV + index + query combined -- the initial "all services" node
+#   nodes 3,4:   spares (outside init_nodes -- InitNodeServices() in
+#                lib/spec.go only operates over the first `init_nodes`
+#                nodes, so these start completely unassigned). Each becomes
+#                a KV + index + query node too, once explicitly server-added
+#                with --services data,index,query in the test -- NOT
+#                through this scope's service-placement math, which only
+#                ever governs the initial cluster. Only 2 spares, not 3 --
+#                test_fusion_combined_services.yml's three topology changes
+#                (add, swap, rebalance-out) only ever touch node 3 and
+#                node 4, never need a third spare simultaneously.
+#
+# services: {data: 3, index: 1, query: 1} with index_start/query_start
+# both at position 3 (-> 0-based node index 2) is what makes node 2 the
+# combined node while nodes 0,1 stay plain data: InitNodeServices assigns
+# "data" to the first `data` nodes in order (0, then 1, then 2 here, no
+# custom start offset exists for it), while index/query both land
+# additionally on node 2 because of the shared *_start override -- the same
+# combining trick scope_fusion_comprehensive.yml and local/scope_local.yml
+# both use, just stacked on top of an explicit data:3 instead of data:0.
+#
+# index_ram is set explicitly (rather than left to auto-detect) for the
+# same reason as scope_fusion_comprehensive.yml: lib/scope.go's
+# InitCluster() only auto-fills + sends a service's ram quota via
+# cluster-init when the ORCHESTRATOR itself (net0) runs that service --
+# net0 here is plain KV, so index would otherwise never get a quota flag
+# and fall back to whatever Couchbase Server itself defaults to,
+# uncontrolled.
+
+servers: # each server tag represents a cluster
+  -
+      name: local
+      count: 5
+      ram: 60%
+      index_ram: "2048"
+      services:
+        data: 3
+        index: 1
+        index_start: 3
+        query: 1
+        query_start: 3
+      rest_username: Administrator
+      rest_password: password
+      ssh_username: root
+      ssh_password: couchbase
+      data_path: "/data/dta"
+      init_nodes: 3

@@ -173,6 +173,16 @@
 # $2 = new topology nodes (post-rebalance), comma separated IPs
 # $3 = seconds to sleep after prepareRebalance before splitting the manifest
 # $4 = rebalance count (used for output file naming / rebalanceID)
+# $5 = optional: any value longer than 2 chars appends --skip-add-nodes.
+#      run_fusion_rebalance.py's own add_nodes() always POSTs to
+#      /controller/addNode with no `services` param, so any node it adds
+#      joins KV-only -- there's no way to get it to add a node with
+#      index/query/etc. via this script alone. Pass this when you've
+#      already server-added the new node(s) yourself (with the services
+#      you actually want) before calling this template, so
+#      run_fusion_rebalance.py skips straight to prepareRebalance onward
+#      instead of trying (and likely failing) to re-add an already-pending
+#      node. Omit for the original plain-KV-node flow, unaffected by this.
 -
   name: fusion_rebalance
   actions:
@@ -188,5 +198,6 @@
                 --base-url http://{{.Orchestrator}}:{{.RestPort}}
                 --username {{.RestUsername}} --password {{.RestPassword}}
                 --env local --config /root/fusion/config.json
-                --sleep-time $3 --reb-count $4 --log-store nfs'"
+                --sleep-time $3 --reb-count $4 --log-store nfs
+                {{if gt (len `$5`) 2}}--skip-add-nodes{{end}}'"
       wait: true
