@@ -45,6 +45,9 @@ func ParseTemplate(s *Scope, command string) string {
 		"to_ip":             tResolv.ToIp,
 		"active":            tResolv.ActiveFilter,
 		"file_base64":       tResolv.FileBase64,
+		"join":              tResolv.Join,
+		"without":           tResolv.Without,
+		"append":            tResolv.Append,
 	}
 	tmpl, err := template.New("t").Funcs(netFunc).Parse(command)
 	logerr(err)
@@ -805,6 +808,38 @@ func (t *TemplateResolver) FileBase64(path string) string {
 	data, err := os.ReadFile(path)
 	logerr(err)
 	return base64.StdEncoding.EncodeToString(data)
+}
+
+// Join joins a string slice with sep, e.g.
+// {{(.ActiveNodes .Nodes) | join ","}} -- for building a comma-separated
+// node list (fusion_rebalance's --current-nodes/--new-nodes, knownNodes)
+// dynamically each round of a loop, rather than hardcoding net N
+// positions, which only works for a fixed, known-in-advance sequence of
+// topology changes.
+func (t *TemplateResolver) Join(sep string, items []string) string {
+	return strings.Join(items, sep)
+}
+
+// Without returns items with every occurrence of exclude removed, e.g.
+// {{(.ActiveNodes .Nodes) | without $removedIP | join ","}} -- the
+// "new-nodes" list for a rebalance-out/failover round.
+func (t *TemplateResolver) Without(exclude string, items []string) []string {
+	result := []string{}
+	for _, item := range items {
+		if item != exclude {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+// Append returns items with extra added to the end, e.g.
+// {{(.ActiveNodes .Nodes) | append $newIP | join ","}} -- the "new-nodes"
+// list for a rebalance-in round.
+func (t *TemplateResolver) Append(extra string, items []string) []string {
+	result := make([]string, len(items))
+	copy(result, items)
+	return append(result, extra)
 }
 
 func (t *TemplateResolver) ToList(spec ServerSpec) []ServerSpec {

@@ -1,0 +1,59 @@
+---
+# NOTE: no `buckets:` block -- same Fusion-before-bucket-creation reasoning
+# as every other scope in this suite. Buckets are created explicitly in
+# test_fusion_stress.yml, after enable_fusion.
+#
+# 6 nodes total, init_nodes: 3 -- the same data+index+query combining shape
+# as scope_fusion_combined_services.yml, with fts added as a third stacked
+# service (new "area" vs. that test, per this test's wider scope):
+#   nodes 0,1: plain KV/data
+#   node 2:    KV + index + query + fts combined -- the initial
+#              "all services" node
+#   nodes 3,4,5: spares (outside init_nodes -- InitNodeServices() in
+#                lib/spec.go only operates over the first `init_nodes`
+#                nodes). test_fusion_stress.yml never hardcodes which
+#                spare becomes what, unlike the two smaller fusion tests --
+#                it resolves nodes dynamically every round (.InActiveNode,
+#                .ActiveIndexNode 0, .ActiveDataNode N, .ActiveNodes), so
+#                adding more spares here later (to scale toward 15-20
+#                nodes) doesn't require touching the test file's logic at
+#                all, just this scope's `count`/`init_nodes` numbers.
+#
+# services: {data: 3, index: 1, query: 1, fts: 1} with index_start/
+# query_start/fts_start all at position 3 (-> 0-based node index 2) stacks
+# all three onto node 2 while data:3 keeps nodes 0,1 plain -- exactly the
+# combining trick from scope_fusion_combined_services.yml, one more
+# service stacked on.
+#
+# index_ram and fts_ram are set explicitly (rather than left to
+# auto-detect) for the same reason documented at length in
+# scope_fusion_comprehensive.yml and scope_fusion_combined_services.yml:
+# lib/scope.go's InitCluster() only auto-fills + sends a service's ram
+# quota via cluster-init when the ORCHESTRATOR itself (net0) runs that
+# service -- net0 here is plain KV, so index/fts would otherwise never get
+# a quota flag at all. 2048+1024 = 3072MB for the two together is well
+# within the node's RAM (confirmed 12GB on this hardware pool during
+# scope_fusion_comprehensive.yml's design -- re-verify if this runs on
+# different machines).
+
+servers: # each server tag represents a cluster
+  -
+      name: local
+      count: 6
+      ram: 60%
+      index_ram: "2048"
+      fts_ram: "1024"
+      services:
+        data: 3
+        index: 1
+        index_start: 3
+        query: 1
+        query_start: 3
+        fts: 1
+        fts_start: 3
+      rest_username: Administrator
+      rest_password: password
+      ssh_username: root
+      ssh_password: couchbase
+      data_path: "/data/dta"
+      init_nodes: 3

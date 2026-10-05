@@ -94,6 +94,7 @@ So the `default` bucket is created explicitly, mid-test, in the `create_bucket` 
 | `stage_fusion_rebalance_scripts` | Push the 3 rebalance scripts onto node `$0` at `/root/fusion/` |
 | `stage_fusion_rebalance_scripts_all_nodes` | `stage_fusion_rebalance_scripts` looped over every node |
 | `fusion_rebalance` | Run the accelerated rebalance from node `$0` |
+| `memcached_kill_during_sync` | Force `sync_log_store`, then immediately kill memcached on node `$0` (its own supervisor restarts it) -- validates the log store stays consistent despite the uploading node dying mid-sync. Distinct from the mid-rebalance caution below: a periodic flush retries on its own next cycle, unlike an in-flight rebalance DCP stream. |
 
 ## `local://` vs `s3://` log stores
 

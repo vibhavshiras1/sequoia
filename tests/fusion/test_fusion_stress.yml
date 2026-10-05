@@ -1,0 +1,473 @@
+- include: tests/templates/fusion.yml, tests/templates/nfs.yml, tests/templates/kv.yml, tests/templates/rebalance.yml, tests/templates/n1ql.yml, tests/templates/fts.yml
+
+# Comprehensive, longer-running Fusion stress test: KV + GSI/N1QL + FTS all
+# exercised concurrently while the cluster's topology keeps changing
+# underneath them -- the point is validating consistency/durability across
+# repeated topology changes, not any single change in isolation.
+# scope_fusion_stress.yml: 6 nodes, 3 plain KV + 1 combined KV+index+
+# query+fts node + 2 spares, sized to the 7-machine pool (minus 1 for NFS)
+# confirmed available right now. Every node reference below is resolved
+# dynamically (.InActiveNode, .ActiveIndexNode 0, .ActiveDataNode 1,
+# .ActiveNodes) rather than hardcoded `net N` positions the way the two
+# smaller fusion tests do -- this is what lets the SAME test file scale
+# toward 15-20 nodes later by just raising scope_fusion_stress.yml's
+# `count`/`init_nodes`, no test-file changes needed.
+#
+# Five topology-change rounds, each a different kind, each paired with a
+# different flavor of chaos:
+#   1. add a plain KV node            -- indexer killed mid-rebalance
+#   2. add a second combined node     -- cbq-engine killed mid-rebalance
+#   3. swap the original combined node out for a new one
+#                                     -- memcached pause/resume (sequential,
+#                                        NOT mid-rebalance -- see note below)
+#   4. rebalance one combined node back out -- projector killed mid-rebalance
+#   5. hard failover + recovery of a plain KV node (genuine membership
+#      attack via Couchbase's own failover, not a topology change Sequoia
+#      requested)
+#
+# Why the kills land genuinely mid-rebalance, not a timing guess:
+# run_fusion_rebalance.py's start_rebalance() (tests/fusion/scripts/
+# run_fusion_rebalance.py) just POSTs to /controller/rebalance and returns
+# immediately -- it does NOT poll for completion. So `fusion_rebalance`'s
+# own (blocking) SSH call returns right as the REAL Couchbase-side
+# data-movement rebalance starts, which is a reliable, race-free
+# synchronization point to fire a kill into -- no totoro-style tuned sleep
+# needed. memcached is the one exception, done sequentially instead
+# (pause -> wait -> resume -> only then trigger the rebalance):
+# tests/fusion/CHAOS_PLAN.md's "Ruled out" section already covers why --
+# unlike indexer/projector/cbq-engine, memcached going down mid-DCP-stream
+# has no retry/resume semantics in Couchbase or in run_fusion_rebalance.py
+# (one prepareRebalance call, one start_rebalance call, no retry loop).
+#
+# A continuous background pressure layer (KV mutation load on both
+# buckets, N1QL query load, FTS query load, and a GSI create/drop churn
+# loop) spans the ENTIRE test, all five rounds included -- literally
+# "build indexes during rebalances", not just before/after.
+#
+# couchbase-cli actions below are all direct (not the shared
+# tests/templates/rebalance.yml templates), pinned to :8.5 -- those shared
+# templates hardcode :7.6, which would violate this repo's own
+# CLI-version-must-match-server-version rule (root CLAUDE.md).
+
+############### set up NFS server + client mounts ################
+- section_start: setup_nfs
+
+- template: setup_nfs_server
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- template: setup_nfs_client_all_nodes
+  requires: "{{eq true $.DoOnce }}"
+  wait: true
+
+- section_end: setup_nfs
+
+############### configure and enable fusion ################
+- section_start: setup_fusion
+
+- template: configure_fusion
+  args: "local:///mnt/nfs/share/buckets"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- template: enable_fusion
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- template: wait_for_fusion_status
+  args: "enabled"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- section_end: setup_fusion
+
+############### create buckets ################
+# bucket1: GSI target. bucket2: FTS target. Both Fusion-backed magma.
+- section_start: create_buckets
+
+- image: sequoiatools/couchbase-cli:8.5
+  command: "bucket-create -c {{.Orchestrator}}:{{.RestPort}} -u {{.RestUsername}} -p {{.RestPassword}}
+            --bucket bucket1 --bucket-ramsize 1024 --bucket-type couchbase
+            --bucket-replica 1 --bucket-eviction-policy fullEviction
+            --storage-backend magma --num-vbuckets 128 --enable-flush 1 --wait"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "bucket-create -c {{.Orchestrator}}:{{.RestPort}} -u {{.RestUsername}} -p {{.RestPassword}}
+            --bucket bucket2 --bucket-ramsize 1024 --bucket-type couchbase
+            --bucket-replica 1 --bucket-eviction-policy fullEviction
+            --storage-backend magma --num-vbuckets 128 --enable-flush 1 --wait"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- section_end: create_buckets
+
+############### stage the fusion rebalance driver scripts ################
+- section_start: stage_fusion_scripts
+
+- template: stage_fusion_rebalance_scripts_all_nodes
+  requires: "{{eq true $.DoOnce }}"
+  wait: true
+
+- section_end: stage_fusion_scripts
+
+############### load data ################
+# larger scale than the other fusion tests on purpose (2M vs 500K-1M)
+- section_start: data_load
+
+- image: sequoiatools/pillowfight:7.0
+  command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket1
+            -I {{.Scale 2000000}} -M 1024 -B 100 -t 4 --random-body --json --populate-only"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+- command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket2
+            -I {{.Scale 2000000}} -M 1024 -B 100 -t 4 --random-body --json --populate-only"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- section_end: data_load
+
+############### GSI + N1QL ################
+# direct cbq actions, not `template: cbq`/`args:` -- and single-quote-only
+# -script wrapping -- see test_fusion_comprehensive.yml's gsi_n1ql section
+# for the full writeup of both lessons (args comma/paren splitting, and
+# the exec-form cbq entrypoint never stripping a "..." wrapper).
+- section_start: gsi_n1ql
+
+- image: sequoiatools/cbq:dev
+  command: "-e=http://{{.Orchestrator}}:{{.RestPort}}
+            -u={{.RestUsername}}
+            -p={{.RestPassword}}
+            -script='create index idx_bucket1_default on `bucket1`.`_default`.`_default`(Field_1, Field_2) using GSI'"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+- image: sequoiatools/cbq:dev
+  command: "-e=http://{{.Orchestrator}}:{{.RestPort}}
+            -u={{.RestUsername}}
+            -p={{.RestPassword}}
+            -script='select count(*) from `bucket1`'"
+  wait: true
+
+- section_end: gsi_n1ql
+
+############### FTS ################
+- section_start: fts_setup
+
+- template: create_index
+  args: "{{.FTSNodePort}}, bucket2, idx_bucket2_fts"
+  requires: "{{eq true .DoOnce }}"
+  wait: true
+
+# let the index build settle before background query load starts hitting it
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "30"
+  wait: true
+
+- section_end: fts_setup
+
+############### force fusion log store sync ################
+- section_start: sync_log_store
+
+- template: sync_log_store
+  wait: true
+
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "120"
+  wait: true
+
+- section_end: sync_log_store
+
+############### start the background pressure layer ################
+# Everything here is async (no `wait:`) and aliased so it can be killed
+# explicitly once all five rounds are done, at the very end of this test --
+# not given its own duration, since the total round time is unpredictable.
+- section_start: pressure_layer
+
+- image: sequoiatools/pillowfight:7.0
+  command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket1
+            -I {{.Scale 2000000}} -M 1024 -B 100 -t 4 --random-body --json"
+  alias: pressure_write_bucket1
+  requires: "{{eq true .DoOnce }}"
+
+- image: sequoiatools/pillowfight:7.0
+  command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket2
+            -I {{.Scale 2000000}} -M 1024 -B 100 -t 4 --random-body --json"
+  alias: pressure_write_bucket2
+  requires: "{{eq true .DoOnce }}"
+
+# query text has no parens on purpose -- attack_query's own `-body $3` has
+# no quote-wrapping to protect literal parens (see
+# test_fusion_comprehensive.yml's fusion_rebalance_topology_changes
+# section for why count(*) specifically can't go through this path).
+- template: attack_query
+  args: "0, 5, {{.QueryNodePort}},
+        select Field_1 from `bucket1` where Field_1 is not null limit 10"
+  alias: pressure_query_load
+  requires: "{{eq true .DoOnce }}"
+
+- template: query_fts
+  args: "{{.FTSNodePort}}, -1, 5, idx_bucket2_fts, Field_1"
+  alias: pressure_fts_load
+  requires: "{{eq true .DoOnce }}"
+
+# index churn -- "build indexes during rebalances": repeatedly create then
+# drop a secondary index (separate from idx_bucket1_default, a different
+# field, so it can't collide with or shadow the query load's index above)
+# for as long as this container keeps getting re-run. A fixed name is safe
+# to reuse every cycle since each cycle fully drops it before the next
+# create -- no uniqueness/counter scheme needed.
+- image: sequoiatools/cbq:dev
+  command: "-e=http://{{.Orchestrator}}:{{.RestPort}}
+            -u={{.RestUsername}}
+            -p={{.RestPassword}}
+            -script='create index idx_churn on `bucket1`.`_default`.`_default`(Field_2) using GSI; drop index idx_churn on `bucket1`.`_default`.`_default`'"
+  alias: pressure_index_churn
+  repeat: -1
+  requires: "{{eq true .DoOnce }}"
+
+- section_end: pressure_layer
+
+############### memcached killed during log-store sync, in a loop #########
+# Background load only -- no topology change in progress, deliberately
+# distinct from every round below (and from the "ruled out" caution in
+# tests/fusion/CHAOS_PLAN.md against killing memcached mid-REBALANCE,
+# which is a different mechanism with no retry semantics). A periodic
+# flush to NFS, by contrast, is already retried on its own next cycle --
+# what this validates is that the log store ends up consistent despite
+# the uploading node dying mid-sync, repeated several times against a
+# genuinely active KV node (.ActiveDataNode 1, same node round 3 already
+# uses for memcached chaos) while the pressure layer keeps writing to it.
+- section_start: memcached_kill_during_sync
+
+- foreach: "{{range $i, $n := mkrange 1 5}}"
+  template: memcached_kill_during_sync
+  args: "{{$.ActiveDataNode 1}}"
+
+- template: get_fusion_status
+  wait: true
+- image: sequoiatools/cbq:dev
+  command: "-e=http://{{.Orchestrator}}:{{.RestPort}}
+            -u={{.RestUsername}}
+            -p={{.RestPassword}}
+            -script='select count(*) from `bucket1`'"
+  wait: true
+
+- section_end: memcached_kill_during_sync
+
+############### round 1: add a plain KV node, indexer killed mid-rebalance #
+- section_start: round_1_add_kv
+
+- image: sequoiatools/couchbase-cli:8.5
+  command: "server-add -c {{.Orchestrator}}:{{.RestPort}}
+            --server-add {{.InActiveNode}}
+            -u {{.RestUsername}} -p {{.RestPassword}}
+            --server-add-username {{.RestUsername}} --server-add-password {{.RestPassword}}
+            --services data"
+  wait: true
+
+- template: fusion_rebalance
+  args: "{{.Orchestrator}}, ({{.Nodes | .ActiveNodes | join `,`}}), ({{.Nodes | .ActiveNodes | append .InActiveNode | join `,`}}), 60, 1, skip_add"
+  wait: true
+
+- template: kill_process
+  args: "{{.ActiveIndexNode 0}}, indexer"
+  wait: true
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "20"
+  wait: true
+
+- template: wait_for_rebalance
+  wait: true
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "30"
+  wait: true
+
+- image: sequoiatools/cbq:dev
+  command: "-e=http://{{.Orchestrator}}:{{.RestPort}}
+            -u={{.RestUsername}}
+            -p={{.RestPassword}}
+            -script='select count(*) from `bucket1`'"
+  wait: true
+
+- section_end: round_1_add_kv
+
+####### round 2: add a second combined node, cbq-engine killed mid-rebalance
+- section_start: round_2_add_combined
+
+- image: sequoiatools/couchbase-cli:8.5
+  command: "server-add -c {{.Orchestrator}}:{{.RestPort}}
+            --server-add {{.InActiveNode}}
+            -u {{.RestUsername}} -p {{.RestPassword}}
+            --server-add-username {{.RestUsername}} --server-add-password {{.RestPassword}}
+            --services data,index,query,fts"
+  wait: true
+
+- template: fusion_rebalance
+  args: "{{.Orchestrator}}, ({{.Nodes | .ActiveNodes | join `,`}}), ({{.Nodes | .ActiveNodes | append .InActiveNode | join `,`}}), 60, 2, skip_add"
+  wait: true
+
+- template: kill_process
+  args: "{{.ActiveQueryNode 0}}, cbq-engine"
+  wait: true
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "20"
+  wait: true
+
+- template: wait_for_rebalance
+  wait: true
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "30"
+  wait: true
+
+- section_end: round_2_add_combined
+
+####### round 3: swap the original combined node out -- memcached pause/
+####### resume done sequentially BEFORE triggering, not mid-rebalance
+- section_start: round_3_swap_combined
+
+- template: memcached_kill
+  args: "{{.ActiveDataNode 1}}"
+  wait: true
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "15"
+  wait: true
+- template: start_memcached
+  args: "{{.ActiveDataNode 1}}"
+  wait: true
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "30"
+  wait: true
+
+- image: sequoiatools/couchbase-cli:8.5
+  command: "server-add -c {{.Orchestrator}}:{{.RestPort}}
+            --server-add {{.InActiveNode}}
+            -u {{.RestUsername}} -p {{.RestPassword}}
+            --server-add-username {{.RestUsername}} --server-add-password {{.RestPassword}}
+            --services data,index,query,fts"
+  wait: true
+
+- template: fusion_rebalance
+  args: "{{.Orchestrator}}, ({{.Nodes | .ActiveNodes | join `,`}}), ({{.Nodes | .ActiveNodes | without (.ActiveIndexNode 0) | append .InActiveNode | join `,`}}), 60, 3, skip_add"
+  wait: true
+- template: wait_for_rebalance
+  wait: true
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "30"
+  wait: true
+
+- section_end: round_3_swap_combined
+
+####### round 4: rebalance one combined node back out, projector killed
+####### mid-rebalance
+- section_start: round_4_rebalance_out_combined
+
+- template: fusion_rebalance
+  args: "{{.Orchestrator}}, ({{.Nodes | .ActiveNodes | join `,`}}), ({{.Nodes | .ActiveNodes | without (.ActiveIndexNode 0) | join `,`}}), 60, 4"
+  wait: true
+
+- template: kill_process
+  args: "{{.ActiveIndexNode 0}}, projector"
+  wait: true
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "20"
+  wait: true
+
+- template: wait_for_rebalance
+  wait: true
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "30"
+  wait: true
+
+- section_end: round_4_rebalance_out_combined
+
+####### round 5: hard failover + recovery of a plain KV node (tier-3 --
+####### genuine Couchbase failover, not a Sequoia-requested topology change)
+- section_start: round_5_failover_recover
+
+- image: sequoiatools/couchbase-cli:8.5
+  command: "failover -c {{.Orchestrator}}:{{.RestPort}}
+            --server-failover {{.ActiveDataNode 1}}:{{.RestPort}}
+            -u {{.RestUsername}} -p {{.RestPassword}} --hard"
+  wait: true
+
+- template: fusion_rebalance
+  args: "{{.Orchestrator}}, ({{.Nodes | .ActiveNodes | join `,`}}), ({{.Nodes | .ActiveNodes | without (.ActiveDataNode 1) | join `,`}}), 60, 5"
+  wait: true
+- template: wait_for_rebalance
+  wait: true
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "30"
+  wait: true
+
+# recovery: add the same, now-failed-over IP back in and rebalance it back
+# into the cluster, restoring the original node count
+- image: sequoiatools/couchbase-cli:8.5
+  command: "server-add -c {{.Orchestrator}}:{{.RestPort}}
+            --server-add {{.InActiveNode}}
+            -u {{.RestUsername}} -p {{.RestPassword}}
+            --server-add-username {{.RestUsername}} --server-add-password {{.RestPassword}}
+            --services data"
+  wait: true
+- template: fusion_rebalance
+  args: "{{.Orchestrator}}, ({{.Nodes | .ActiveNodes | join `,`}}), ({{.Nodes | .ActiveNodes | append .InActiveNode | join `,`}}), 60, 6, skip_add"
+  wait: true
+- template: wait_for_rebalance
+  wait: true
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "30"
+  wait: true
+
+- section_end: round_5_failover_recover
+
+############### stop pressure layer + final verify ################
+- section_start: verify_fusion
+
+- client:
+    op: kill
+    container: pressure_write_bucket1
+- client:
+    op: kill
+    container: pressure_write_bucket2
+- client:
+    op: kill
+    container: pressure_query_load
+- client:
+    op: kill
+    container: pressure_fts_load
+- client:
+    op: kill
+    container: pressure_index_churn
+
+- template: get_fusion_status
+  wait: true
+
+- image: sequoiatools/cbq:dev
+  command: "-e=http://{{.Orchestrator}}:{{.RestPort}}
+            -u={{.RestUsername}}
+            -p={{.RestPassword}}
+            -script='select count(*) from `bucket1`'"
+  wait: true
+- command: "-e=http://{{.Orchestrator}}:{{.RestPort}}
+            -u={{.RestUsername}}
+            -p={{.RestPassword}}
+            -script='select count(*) from `bucket2`'"
+  wait: true
+
+- template: query_fts
+  args: "{{.FTSNodePort}}, 10, 1, idx_bucket2_fts, Field_1"
+  wait: true
+
+- section_end: verify_fusion

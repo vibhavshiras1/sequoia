@@ -43,6 +43,49 @@
       command: "-X POST -u {{.RestUsername}}:{{.RestPassword}}
                 {{.Orchestrator}}:{{.RestPort}}/controller/fusion/syncLogStore"
 
+# Force a log-store sync, then immediately kill memcached (tier-1 -- its
+# own supervisor is expected to restart it, same precedent as every other
+# memcached_kill/start_memcached use in this repo) on the node driving it,
+# while it's live and actively taking writes. Distinct from -- not a
+# contradiction of -- the "ruled out" caution in tests/fusion/CHAOS_PLAN.md
+# against killing memcached mid-REBALANCE: that's about an in-flight
+# DCP vbucket stream between nodes with no retry semantics. This is a
+# periodic local flush to NFS instead, which Fusion already re-attempts on
+# its own next cycle (every 10 minutes, or the next forced sync) regardless
+# of whether this one completed -- what this actually checks is whether the
+# log store ends up consistent despite the node doing the uploading dying
+# mid-sync, not whether this one specific sync call survives.
+# syncLogStore's own POST returns once the sync is queued/kicked off
+# server-side, not once it finishes uploading -- same reasoning as
+# fusion_rebalance's start_rebalance(), so firing the kill immediately
+# after lands inside the real upload window, not a guessed delay.
+# $0 = node to kill memcached on (should be an active KV node genuinely
+#      taking writes, so there's real pending data at risk when it dies)
+-
+  name: memcached_kill_during_sync
+  actions:
+    -
+      template: sync_log_store
+      wait: true
+    -
+      template: memcached_kill
+      args: "$0"
+      wait: true
+    -
+      image: sequoiatools/cmd
+      entrypoint: sleep
+      command: "10"
+      wait: true
+    -
+      template: start_memcached
+      args: "$0"
+      wait: true
+    -
+      image: sequoiatools/cmd
+      entrypoint: sleep
+      command: "20"
+      wait: true
+
 # Poll /fusion/status until it reaches the given state (e.g. "enabled").
 # $0 = desired state
 -
