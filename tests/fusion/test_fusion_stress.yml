@@ -236,14 +236,16 @@
 # which is a different mechanism with no retry semantics). A periodic
 # flush to NFS, by contrast, is already retried on its own next cycle --
 # what this validates is that the log store ends up consistent despite
-# the uploading node dying mid-sync, repeated several times against a
-# genuinely active KV node (.ActiveDataNode 1, same node round 3 already
-# uses for memcached chaos) while the pressure layer keeps writing to it.
+# the uploading node dying mid-sync, cycled across EVERY currently active
+# node (not just one repeatedly) while the pressure layer keeps writing.
+# Ranges over the live active-node list rather than a fixed count, so this
+# naturally covers however many nodes exist at this point in the test (3,
+# right after setup) without needing a hardcoded number.
 - section_start: memcached_kill_during_sync
 
-- foreach: "{{range $i, $n := mkrange 1 5}}"
+- foreach: "{{range $i, $n := (.Nodes | .ActiveNodes)}}"
   template: memcached_kill_during_sync
-  args: "{{$.ActiveDataNode 1}}"
+  args: "{{$n}}"
 
 - template: get_fusion_status
   wait: true
@@ -329,17 +331,24 @@
 
 ####### round 3: swap the original combined node out -- memcached pause/
 ####### resume done sequentially BEFORE triggering, not mid-rebalance
+#
+# Targets .ActiveDataNode 3 (net3, the plain KV node round 1 added), not
+# net1 -- net1 already got covered by the memcached_kill_during_sync loop
+# above, and this round's own swap is already touching net2 (via
+# .ActiveIndexNode 0 below), so overlapping memcached chaos onto either of
+# those would muddy which fault caused what. Spreads coverage across a
+# third, otherwise-untouched node instead.
 - section_start: round_3_swap_combined
 
 - template: memcached_kill
-  args: "{{.ActiveDataNode 1}}"
+  args: "{{.ActiveDataNode 3}}"
   wait: true
 - image: sequoiatools/cmd
   entrypoint: sleep
   command: "15"
   wait: true
 - template: start_memcached
-  args: "{{.ActiveDataNode 1}}"
+  args: "{{.ActiveDataNode 3}}"
   wait: true
 - image: sequoiatools/cmd
   entrypoint: sleep
@@ -393,16 +402,33 @@
 
 ####### round 5: hard failover + recovery of a plain KV node (tier-3 --
 ####### genuine Couchbase failover, not a Sequoia-requested topology change)
+#
+# Uses static `net 1` addressing for the failed node throughout this round,
+# NOT .ActiveDataNode 1 -- a first attempt at this round used the dynamic
+# resolver for both the failover target and the rebalance's node lists, and
+# it broke in two places at once: Couchbase flips a node's
+# clusterMembership away from "active" the instant the failover command
+# completes, well before any rebalance physically ejects it. By the time
+# the very next action evaluated .ActiveNodes, the failed node had already
+# silently dropped out of it -- so "current" (built from .ActiveNodes) was
+# missing a node Couchbase still considered a real cluster member,
+# and separately .ActiveDataNode 1, re-evaluated post-failover, had already
+# shifted to point at a completely different (wrong) node for the same
+# reason. Both together made /controller/rebalance reject the call with
+# 400 Bad Request, confirmed against a real run. `net 1` is scope-position
+# addressing -- it names the same physical node regardless of what
+# Couchbase currently thinks its membership status is, so it isn't subject
+# to either failure mode.
 - section_start: round_5_failover_recover
 
 - image: sequoiatools/couchbase-cli:8.5
   command: "failover -c {{.Orchestrator}}:{{.RestPort}}
-            --server-failover {{.ActiveDataNode 1}}:{{.RestPort}}
+            --server-failover {{.Nodes | net 1}}:{{.RestPort}}
             -u {{.RestUsername}} -p {{.RestPassword}} --hard"
   wait: true
 
 - template: fusion_rebalance
-  args: "{{.Orchestrator}}, ({{.Nodes | .ActiveNodes | join `,`}}), ({{.Nodes | .ActiveNodes | without (.ActiveDataNode 1) | join `,`}}), 60, 5"
+  args: "{{.Orchestrator}}, ({{.Nodes | .ActiveNodes | append (.Nodes | net 1) | join `,`}}), ({{.Nodes | .ActiveNodes | join `,`}}), 60, 5"
   wait: true
 - template: wait_for_rebalance
   wait: true
