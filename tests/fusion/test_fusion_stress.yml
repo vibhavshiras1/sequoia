@@ -111,16 +111,16 @@
 - section_end: stage_fusion_scripts
 
 ############### load data ################
-# larger scale than the other fusion tests on purpose (2M vs 500K-1M)
+# larger scale than the other fusion tests on purpose (10M vs 500K-1M)
 - section_start: data_load
 
 - image: sequoiatools/pillowfight:7.0
   command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket1
-            -I {{.Scale 2000000}} -M 1024 -B 100 -t 4 --random-body --json --populate-only"
+            -I {{.Scale 10000000}} -M 1024 -B 100 -t 4 --random-body --json --populate-only"
   requires: "{{eq true .DoOnce }}"
   wait: true
 - command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket2
-            -I {{.Scale 2000000}} -M 1024 -B 100 -t 4 --random-body --json --populate-only"
+            -I {{.Scale 10000000}} -M 1024 -B 100 -t 4 --random-body --json --populate-only"
   requires: "{{eq true .DoOnce }}"
   wait: true
 
@@ -187,13 +187,13 @@
 
 - image: sequoiatools/pillowfight:7.0
   command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket1
-            -I {{.Scale 2000000}} -M 1024 -B 100 -t 4 --random-body --json"
+            -I {{.Scale 10000000}} -M 1024 -B 100 -t 4 --random-body --json"
   alias: pressure_write_bucket1
   requires: "{{eq true .DoOnce }}"
 
 - image: sequoiatools/pillowfight:7.0
   command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket2
-            -I {{.Scale 2000000}} -M 1024 -B 100 -t 4 --random-body --json"
+            -I {{.Scale 10000000}} -M 1024 -B 100 -t 4 --random-body --json"
   alias: pressure_write_bucket2
   requires: "{{eq true .DoOnce }}"
 
