@@ -329,8 +329,18 @@
 
 - section_end: round_2_add_combined
 
-####### round 3: swap the original combined node out -- memcached pause/
-####### resume done sequentially BEFORE triggering, not mid-rebalance
+####### round 3: swap the original combined node out -- memcached killed
+####### sequentially BEFORE triggering, not mid-rebalance
+#
+# A genuine kill_process (SIGKILL), not memcached_kill/start_memcached
+# (tests/templates/rebalance.yml) -- those are SIGSTOP/SIGCONT, which
+# pause/freeze the process without ever terminating it: no crash, nothing
+# for the babysitter to restart, no dropped control connection. Safe to
+# kill for real here specifically because it happens before the swap
+# rebalance starts, not concurrent with any in-flight DCP data movement --
+# that in-flight case is what tests/fusion/CHAOS_PLAN.md's "ruled out"
+# caution is actually about, not a blanket rule against ever killing
+# memcached.
 #
 # Targets .ActiveDataNode 3 (net3, the plain KV node round 1 added), not
 # net1 -- net1 already got covered by the memcached_kill_during_sync loop
@@ -340,15 +350,8 @@
 # third, otherwise-untouched node instead.
 - section_start: round_3_swap_combined
 
-- template: memcached_kill
-  args: "{{.ActiveDataNode 3}}"
-  wait: true
-- image: sequoiatools/cmd
-  entrypoint: sleep
-  command: "15"
-  wait: true
-- template: start_memcached
-  args: "{{.ActiveDataNode 3}}"
+- template: kill_process
+  args: "{{.ActiveDataNode 3}}, memcached"
   wait: true
 - image: sequoiatools/cmd
   entrypoint: sleep

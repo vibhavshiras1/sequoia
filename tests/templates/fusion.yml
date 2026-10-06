@@ -44,16 +44,24 @@
                 {{.Orchestrator}}:{{.RestPort}}/controller/fusion/syncLogStore"
 
 # Force a log-store sync, then immediately kill memcached (tier-1 -- its
-# own supervisor is expected to restart it, same precedent as every other
-# memcached_kill/start_memcached use in this repo) on the node driving it,
-# while it's live and actively taking writes. Distinct from -- not a
-# contradiction of -- the "ruled out" caution in tests/fusion/CHAOS_PLAN.md
-# against killing memcached mid-REBALANCE: that's about an in-flight
-# DCP vbucket stream between nodes with no retry semantics. This is a
-# periodic local flush to NFS instead, which Fusion already re-attempts on
-# its own next cycle (every 10 minutes, or the next forced sync) regardless
-# of whether this one completed -- what this actually checks is whether the
-# log store ends up consistent despite the node doing the uploading dying
+# own supervisor/babysitter is expected to restart it, same precedent as
+# the indexer/projector/cbq-engine kills elsewhere in this suite) on the
+# node driving it, while it's live and actively taking writes. Uses
+# kill_process (a real SIGKILL), NOT memcached_kill/start_memcached
+# (tests/templates/rebalance.yml) -- those are SIGSTOP/SIGCONT, which
+# pause/freeze the process without ever terminating it: no crash, no
+# restart, no dropped control connection, so they don't actually exercise
+# what this test needs to (confirmed empirically -- a real run never
+# produced the "Control connection to memcached ... disconnected" log line
+# ns_server emits on a genuine termination, which a manual `kill -9` does
+# produce). Distinct from -- not a contradiction of -- the "ruled out"
+# caution in tests/fusion/CHAOS_PLAN.md against killing memcached mid-
+# REBALANCE: that's about an in-flight DCP vbucket stream between nodes
+# with no retry semantics. This is a periodic local flush to NFS instead,
+# which Fusion already re-attempts on its own next cycle (every 10
+# minutes, or the next forced sync) regardless of whether this one
+# completed -- what this actually checks is whether the log store ends up
+# consistent despite the node doing the uploading genuinely dying
 # mid-sync, not whether this one specific sync call survives.
 # syncLogStore's own POST returns once the sync is queued/kicked off
 # server-side, not once it finishes uploading -- same reasoning as
@@ -68,17 +76,8 @@
       template: sync_log_store
       wait: true
     -
-      template: memcached_kill
-      args: "$0"
-      wait: true
-    -
-      image: sequoiatools/cmd
-      entrypoint: sleep
-      command: "10"
-      wait: true
-    -
-      template: start_memcached
-      args: "$0"
+      template: kill_process
+      args: "$0, memcached"
       wait: true
     -
       image: sequoiatools/cmd
