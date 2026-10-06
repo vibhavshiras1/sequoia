@@ -229,23 +229,46 @@
 
 - section_end: pressure_layer
 
-############### memcached killed during log-store sync, in a loop #########
-# Background load only -- no topology change in progress, deliberately
-# distinct from every round below (and from the "ruled out" caution in
-# tests/fusion/CHAOS_PLAN.md against killing memcached mid-REBALANCE,
-# which is a different mechanism with no retry semantics). A periodic
-# flush to NFS, by contrast, is already retried on its own next cycle --
-# what this validates is that the log store ends up consistent despite
-# the uploading node dying mid-sync, cycled across EVERY currently active
-# node (not just one repeatedly) while the pressure layer keeps writing.
-# Ranges over the live active-node list rather than a fixed count, so this
-# naturally covers however many nodes exist at this point in the test (3,
-# right after setup) without needing a hardcoded number.
-- section_start: memcached_kill_during_sync
+############### memcached chaos, spread across the whole test ##########
+# Background load only -- never overlapping a round's own fusion_rebalance/
+# wait_for_rebalance window below (that in-flight-DCP-stream case is what
+# tests/fusion/CHAOS_PLAN.md's "ruled out" caution is actually about, not
+# a blanket rule against ever killing memcached). Spread across several
+# separate interludes between rounds, not bunched into one block upfront,
+# so kills land at different points across the whole run instead of all
+# within the first few minutes.
+#
+# Each interlude kills memcached on AT LEAST HALF of the currently-active
+# nodes TOGETHER, not one at a time: every `template: kill_process` call
+# below deliberately omits `wait:`, so each fires as its own async action
+# (ContainerTask.Async = !action.Wait, lib/test.go) instead of blocking the
+# next one -- the SSH sessions all launch within moments of each other,
+# a real simultaneous-multi-node failure rather than a staggered one. This
+# is why these call `template: kill_process` directly rather than the
+# memcached_kill_during_sync/memcached_kill_random templates
+# (tests/templates/fusion.yml) -- both of those hardcode `wait: true` on
+# every one of their own internal steps, so repeating either back to back
+# is always sequential no matter how the outer call itself is written.
+#
+# Alternates two flavors across the interludes:
+#   force a sync, then kill -- tests surviving a kill during a sync known
+#                               to be in flight
+#   kill with no forced sync -- tests the more common case, since Fusion's
+#                                own periodic sync only runs every 10 min
+# Round 3 further down has its own separate, deterministic single-node
+# pre-swap kill (a different concern) and is untouched by any of this.
+- section_start: memcached_chaos_1
 
-- foreach: "{{range $i, $n := (.Nodes | .ActiveNodes)}}"
-  template: memcached_kill_during_sync
-  args: "{{$n}}"
+- template: sync_log_store
+  wait: true
+- template: kill_process
+  args: "{{.ActiveDataNode 0}}, memcached"
+- template: kill_process
+  args: "{{.ActiveDataNode 1}}, memcached"
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "30"
+  wait: true
 
 - template: get_fusion_status
   wait: true
@@ -256,7 +279,7 @@
             -script='select count(*) from `bucket1`'"
   wait: true
 
-- section_end: memcached_kill_during_sync
+- section_end: memcached_chaos_1
 
 ############### round 1: add a plain KV node, indexer killed mid-rebalance #
 - section_start: round_1_add_kv
@@ -297,6 +320,22 @@
 
 - section_end: round_1_add_kv
 
+############### memcached chaos interlude 2 -- no forced sync this time ###
+# 4 nodes active at this point (round 1 added one) -- kill 2 together
+# (positions 1,2, not 0,1 -- different nodes than interlude 1 above hit).
+- section_start: memcached_chaos_2
+
+- template: kill_process
+  args: "{{.ActiveDataNode 1}}, memcached"
+- template: kill_process
+  args: "{{.ActiveDataNode 2}}, memcached"
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "30"
+  wait: true
+
+- section_end: memcached_chaos_2
+
 ####### round 2: add a second combined node, cbq-engine killed mid-rebalance
 - section_start: round_2_add_combined
 
@@ -328,6 +367,26 @@
   wait: true
 
 - section_end: round_2_add_combined
+
+############### memcached chaos interlude 3 -- forced sync + kill again ###
+# 5 nodes active at this point (round 2 added a second combined node) --
+# kill 3 together (positions 0,1,2).
+- section_start: memcached_chaos_3
+
+- template: sync_log_store
+  wait: true
+- template: kill_process
+  args: "{{.ActiveDataNode 0}}, memcached"
+- template: kill_process
+  args: "{{.ActiveDataNode 1}}, memcached"
+- template: kill_process
+  args: "{{.ActiveDataNode 2}}, memcached"
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "30"
+  wait: true
+
+- section_end: memcached_chaos_3
 
 ####### round 3: swap the original combined node out -- memcached killed
 ####### sequentially BEFORE triggering, not mid-rebalance
@@ -402,6 +461,22 @@
   wait: true
 
 - section_end: round_4_rebalance_out_combined
+
+############### memcached chaos interlude 4 -- no forced sync again #######
+# 4 nodes active at this point (round 4 shrank back down by one) -- kill 2
+# together (positions 2,3, the opposite half from interlude 2's 1,2).
+- section_start: memcached_chaos_4
+
+- template: kill_process
+  args: "{{.ActiveDataNode 2}}, memcached"
+- template: kill_process
+  args: "{{.ActiveDataNode 3}}, memcached"
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "30"
+  wait: true
+
+- section_end: memcached_chaos_4
 
 ####### round 5: hard failover + recovery of a plain KV node (tier-3 --
 ####### genuine Couchbase failover, not a Sequoia-requested topology change)

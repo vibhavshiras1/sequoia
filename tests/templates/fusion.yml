@@ -85,6 +85,27 @@
       command: "20"
       wait: true
 
+# Kill memcached with NO preceding forced sync -- relies on Fusion's own
+# periodic log-store sync (every 10 minutes) to eventually pick up
+# whatever was pending when the node died, rather than a sync we
+# explicitly triggered. Complements memcached_kill_during_sync above: that
+# one tests surviving a kill during a sync we know is in flight; this one
+# tests the more common case of a crash with no sync in flight at all,
+# since the periodic sync only runs once every 10 minutes.
+# $0 = node to kill memcached on
+-
+  name: memcached_kill_random
+  actions:
+    -
+      template: kill_process
+      args: "$0, memcached"
+      wait: true
+    -
+      image: sequoiatools/cmd
+      entrypoint: sleep
+      command: "20"
+      wait: true
+
 # Poll /fusion/status until it reaches the given state (e.g. "enabled").
 # $0 = desired state
 -
