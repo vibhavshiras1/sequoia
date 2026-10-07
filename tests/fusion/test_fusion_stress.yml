@@ -111,16 +111,16 @@
 - section_end: stage_fusion_scripts
 
 ############### load data ################
-# larger scale than the other fusion tests on purpose (10M vs 500K-1M)
+# larger scale than the other fusion tests on purpose (50M vs 500K-1M)
 - section_start: data_load
 
 - image: sequoiatools/pillowfight:7.0
   command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket1
-            -I {{.Scale 10000000}} -M 1024 -B 100 -t 4 --random-body --json --populate-only"
+            -I {{.Scale 50000000}} -M 1024 -B 100 -t 4 --random-body --json --populate-only"
   requires: "{{eq true .DoOnce }}"
   wait: true
 - command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket2
-            -I {{.Scale 10000000}} -M 1024 -B 100 -t 4 --random-body --json --populate-only"
+            -I {{.Scale 50000000}} -M 1024 -B 100 -t 4 --random-body --json --populate-only"
   requires: "{{eq true .DoOnce }}"
   wait: true
 
@@ -195,20 +195,29 @@
 
 - image: sequoiatools/pillowfight:7.0
   command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket1
-            -I {{.Scale 10000000}} -M 1024 -B 100 -t 4 --random-body --json"
+            -I {{.Scale 50000000}} -M 1024 -B 100 -t 4 --random-body --json"
   alias: pressure_write_bucket1
 
 - image: sequoiatools/pillowfight:7.0
   command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket2
-            -I {{.Scale 10000000}} -M 1024 -B 100 -t 4 --random-body --json"
+            -I {{.Scale 50000000}} -M 1024 -B 100 -t 4 --random-body --json"
   alias: pressure_write_bucket2
 
 # query text has no parens on purpose -- attack_query's own `-body $3` has
 # no quote-wrapping to protect literal parens (see
 # test_fusion_comprehensive.yml's fusion_rebalance_topology_changes
 # section for why count(*) specifically can't go through this path).
+#
+# rate bumped from 5 to 25, not straight to 15-20: a real run only
+# achieved ~3 actual q/s against a configured rate of 5 (a ~60% hit rate,
+# presumably query latency/cbdozer's own worker pool capping real
+# throughput below whatever's requested, not something tunable from
+# here). Scaling that same ratio up suggests ~25 requested lands close to
+# the 15-20 actual target, but this is an extrapolation from one data
+# point, not a guarantee -- re-check the achieved rate after this runs
+# and adjust further if it's still off.
 - template: attack_query
-  args: "0, 5, {{.QueryNodePort}},
+  args: "0, 25, {{.QueryNodePort}},
         select Field_1 from `bucket1` where Field_1 is not null limit 10"
   alias: pressure_query_load
 
