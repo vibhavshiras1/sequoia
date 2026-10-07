@@ -184,18 +184,24 @@
 # explicitly once all five rounds are done, at the very end of this test --
 # not given its own duration, since the total round time is unpredictable.
 - section_start: pressure_layer
+# NOT requires: .DoOnce on any of these 5 -- when this test is run with
+# -repeat/-duration (looping the whole file for close to a day), the
+# framework's own DoContainerCleanup tears down every managed container,
+# including these, at the end of EVERY cycle (lib/test.go's repeat loop),
+# not just once at the very end. Gating these to DoOnce would mean the
+# pressure layer only ever exists during cycle 1 -- every later cycle
+# would run with no background load at all, silently defeating the whole
+# point of this test. Restarting fresh each cycle is correct.
 
 - image: sequoiatools/pillowfight:7.0
   command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket1
             -I {{.Scale 10000000}} -M 1024 -B 100 -t 4 --random-body --json"
   alias: pressure_write_bucket1
-  requires: "{{eq true .DoOnce }}"
 
 - image: sequoiatools/pillowfight:7.0
   command: "-u {{.RestUsername}} -P {{.RestPassword}} -U couchbase://{{.Orchestrator}}/bucket2
             -I {{.Scale 10000000}} -M 1024 -B 100 -t 4 --random-body --json"
   alias: pressure_write_bucket2
-  requires: "{{eq true .DoOnce }}"
 
 # query text has no parens on purpose -- attack_query's own `-body $3` has
 # no quote-wrapping to protect literal parens (see
@@ -205,12 +211,10 @@
   args: "0, 5, {{.QueryNodePort}},
         select Field_1 from `bucket1` where Field_1 is not null limit 10"
   alias: pressure_query_load
-  requires: "{{eq true .DoOnce }}"
 
 - template: query_fts
   args: "{{.FTSNodePort}}, -1, 5, idx_bucket2_fts, Field_1"
   alias: pressure_fts_load
-  requires: "{{eq true .DoOnce }}"
 
 # index churn -- "build indexes during rebalances": repeatedly create then
 # drop a secondary index (separate from idx_bucket1_default, a different
@@ -225,7 +229,6 @@
             -script='create index idx_churn on `bucket1`.`_default`.`_default`(Field_2) using GSI; drop index idx_churn on `bucket1`.`_default`.`_default`'"
   alias: pressure_index_churn
   repeat: -1
-  requires: "{{eq true .DoOnce }}"
 
 - section_end: pressure_layer
 
@@ -535,6 +538,32 @@
   wait: true
 
 - section_end: round_5_failover_recover
+
+####### round 6: rebalance round 1's added node back out -- restores the
+####### exact starting topology (3 active, 3 spares) so this whole
+####### sequence can repeat indefinitely without exhausting the spare
+####### pool. Without this, round 1 of every cycle permanently consumes
+####### one spare with nothing elsewhere in the cycle to return it --
+####### rounds 2-5 are already net-zero on spare count on their own
+####### (confirmed by tracing it through), round 1 alone isn't. net 3 is
+####### always specifically the node round 1 added (the first spare
+####### .InActiveNode ever consumes, since nothing touches it before
+####### round 1 runs), and it's never touched by rounds 2-5 either, so
+####### static addressing is safe and correct here, same reasoning as
+####### round 5's net 1 fix above.
+- section_start: round_6_restore_baseline
+
+- template: fusion_rebalance
+  args: "{{.Orchestrator}}, ({{.Nodes | .ActiveNodes | join `,`}}), ({{.Nodes | .ActiveNodes | without (.Nodes | net 3) | join `,`}}), 60, 7"
+  wait: true
+- template: wait_for_rebalance
+  wait: true
+- image: sequoiatools/cmd
+  entrypoint: sleep
+  command: "30"
+  wait: true
+
+- section_end: round_6_restore_baseline
 
 ############### stop pressure layer + final verify ################
 - section_start: verify_fusion
